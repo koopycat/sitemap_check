@@ -45,7 +45,7 @@ func writeReport(w io.Writer, format reportFormat, results []Result, verbose boo
 	sorted := make([]Result, len(results))
 	copy(sorted, results)
 	sort.SliceStable(sorted, func(i, j int) bool {
-		ri, rj := rank(sorted[i]), rank(sorted[j])
+		ri, rj := rankOf(sorted[i].Class()), rankOf(sorted[j].Class())
 		if ri != rj {
 			return ri < rj
 		}
@@ -64,8 +64,9 @@ func writeReport(w io.Writer, format reportFormat, results []Result, verbose boo
 	}
 }
 
-func rank(r Result) int {
-	switch r.Class() {
+// rankOf orders result classes for the report: worst first.
+func rankOf(class string) int {
+	switch class {
 	case "error":
 		return 0
 	case "server_error":
@@ -97,7 +98,7 @@ func writeTable(w io.Writer, results []Result, verbose bool) {
 			line += fmt.Sprintf("  [%d attempts]", r.Attempts)
 		}
 		if r.Location != "" {
-			line += fmt.Sprintf("  -> %s", r.Location)
+			line += "  -> " + r.Location
 		}
 		fmt.Fprintln(w, line)
 		shown++
@@ -127,26 +128,23 @@ func writeSummaryTable(w io.Writer, s summary) {
 	fmt.Fprintf(w, "Latency p99:    %s\n", s.P99.Round(time.Millisecond))
 }
 
-type jsonReport struct {
-	Summary summaryJSON `json:"summary"`
-	Results []Result    `json:"results"`
-}
-
-type summaryJSON struct {
-	Total        int   `json:"total"`
-	OK           int   `json:"ok"`
-	Redirects    int   `json:"redirects"`
-	ClientErrors int   `json:"client_errors"`
-	ServerErrors int   `json:"server_errors"`
-	NetErrors    int   `json:"network_errors"`
-	Other        int   `json:"other"`
-	P50ms        int64 `json:"p50_ms"`
-	P95ms        int64 `json:"p95_ms"`
-	P99ms        int64 `json:"p99_ms"`
-}
-
 func writeJSON(w io.Writer, results []Result, s summary) error {
-	rep := jsonReport{
+	type summaryJSON struct {
+		Total        int   `json:"total"`
+		OK           int   `json:"ok"`
+		Redirects    int   `json:"redirects"`
+		ClientErrors int   `json:"client_errors"`
+		ServerErrors int   `json:"server_errors"`
+		NetErrors    int   `json:"network_errors"`
+		Other        int   `json:"other"`
+		P50ms        int64 `json:"p50_ms"`
+		P95ms        int64 `json:"p95_ms"`
+		P99ms        int64 `json:"p99_ms"`
+	}
+	rep := struct {
+		Summary summaryJSON `json:"summary"`
+		Results []Result    `json:"results"`
+	}{
 		Summary: summaryJSON{
 			Total:        s.Total,
 			OK:           s.OK,

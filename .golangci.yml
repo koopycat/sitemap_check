@@ -16,7 +16,6 @@ linters:
 
     - gosec # security rules (weak crypto, injection, ...)
     - revive # golint successor: style, naming, exported comments
-    - goimports # import grouping/formatting
     - misspell # common typos
     - unconvert # pointless type conversions
     - unparam # unused/constant function parameters
@@ -30,8 +29,6 @@ linters:
     - errorlint # non-wrapped errors, == on errors, type asserts on errors
 
   settings:
-    goimports:
-      local-prefixes: sitemap_check
     revive:
       rules:
         - name: exported
@@ -60,3 +57,11 @@ linters:
 issues:
   max-issues-per-linter: 0
   max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes: sitemap_check

@@ -4,6 +4,7 @@ import (
 	"compress/gzip"
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -12,11 +13,9 @@ import (
 	"sync"
 )
 
-const maxSitemapDepth = 5
-
 // errEmptySitemap marks sitemap documents that parsed successfully but
 // contained no entries at all (e.g. an empty <sitemapindex/>).
-var errEmptySitemap = fmt.Errorf("sitemap contains no URLs")
+var errEmptySitemap = errors.New("sitemap contains no URLs")
 
 // FetchStats reports how the sitemap crawl went.
 type FetchStats struct {
@@ -27,13 +26,14 @@ type FetchStats struct {
 
 // fetchSitemapURLs recursively fetches a sitemap (or sitemap index) and
 // streams all contained page URLs to out. Sibling sitemaps are fetched
-// concurrently, nested sitemaps up to maxSitemapDepth, at most maxSitemaps
-// files in total (0 = no limit). The out channel is closed when done.
+// concurrently, nested sitemaps are followed (cycle-safe via the seen map),
+// at most maxSitemaps files in total (0 = no limit).
+// The out channel is closed when done.
 //
 // The caller can request an early stop (e.g. because --max-urls was
 // reached) via the returned stop function; any queued sitemap files are
 // then drained without fetching and out is closed.
-func fetchSitemapURLs(ctx context.Context, client *http.Client, root, userAgent string, maxSitemaps, workers int, out chan string) (FetchStats, func(), error) {
+func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, maxSitemaps, workers int, out chan string) (FetchStats, func(), error) {
 	var stats FetchStats
 
 	if workers < 1 {
@@ -41,8 +41,7 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root, userAgent 
 	}
 
 	type item struct {
-		loc   string
-		depth int
+		loc string
 	}
 	// queue must never fill up while a worker is processing an item,
 	// otherwise that worker blocks in enqueue while still holding an
@@ -82,7 +81,7 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root, userAgent 
 	}
 
 	// enqueue registers loc for processing exactly once.
-	enqueue := func(loc string, depth int) {
+	enqueue := func(loc string) {
 		mu.Lock()
 		if seen[loc] || cancelled {
 			mu.Unlock()
@@ -93,7 +92,7 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root, userAgent 
 		wg.Add(1)
 		for {
 			select {
-			case queue <- item{loc: loc, depth: depth}:
+			case queue <- item{loc: loc}:
 				return
 			case <-stopCh:
 				wg.Done()
@@ -122,16 +121,7 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root, userAgent 
 		fetched++
 		mu.Unlock()
 
-		if it.depth > maxSitemapDepth {
-			mu.Lock()
-			if firstErr == nil {
-				firstErr = fmt.Errorf("maximum sitemap nesting depth (%d) exceeded at %s", maxSitemapDepth, it.loc)
-			}
-			mu.Unlock()
-			return
-		}
-
-		kind, locs, n, err := fetchAndParseSitemap(ctx, client, it.loc, userAgent, stopCh, out)
+		kind, locs, n, err := fetchAndParseSitemap(ctx, client, it.loc, stopCh, out)
 		if err != nil {
 			mu.Lock()
 			if firstErr == nil {
@@ -146,16 +136,16 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root, userAgent 
 		mu.Unlock()
 		if kind == "index" {
 			for _, l := range locs {
-				enqueue(l, it.depth+1)
+				enqueue(l)
 			}
 		}
 	}
 
 	// Signal completion and close out once every item has been processed.
-	// IMPORTANT: the closer goroutine must be started AFTER enqueue(root, 0).
+	// IMPORTANT: the closer goroutine must be started AFTER enqueue(root).
 	// If it starts before the first wg.Add, it can observe an empty WaitGroup
 	// and close out (and done) before any work was registered.
-	enqueue(root, 0)
+	enqueue(root)
 
 	go func() {
 		wg.Wait()
@@ -211,7 +201,7 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root, userAgent 
 //
 // It reports whether it was asked to stop via the stop channel; in that
 // case the parse aborts early without error.
-func fetchAndParseSitemap(ctx context.Context, client *http.Client, loc, userAgent string, stop <-chan struct{}, out chan<- string) (kind string, locs []string, n int, err error) {
+func fetchAndParseSitemap(ctx context.Context, client *http.Client, loc string, stop <-chan struct{}, out chan<- string) (kind string, locs []string, n int, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
 	if err != nil {
 		return "", nil, 0, err
@@ -250,7 +240,7 @@ func fetchAndParseSitemap(ctx context.Context, client *http.Client, loc, userAge
 
 	for {
 		tok, tokErr := dec.Token()
-		if tokErr == io.EOF {
+		if errors.Is(tokErr, io.EOF) {
 			break
 		}
 		if tokErr != nil {

@@ -34,7 +34,7 @@ func TestFetchURLSet(t *testing.T) {
 	defer srv.Close()
 
 	urls := make(chan string, 16)
-	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml", "test/1.0", 0, 4, urls)
+	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml", 0, 4, urls)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -71,7 +71,7 @@ func TestFetchSitemapIndexNested(t *testing.T) {
 	base = srv.URL
 
 	urls := make(chan string, 16)
-	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml", "test/1.0", 0, 4, urls)
+	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml", 0, 4, urls)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -95,7 +95,7 @@ func TestFetchSitemapGzip(t *testing.T) {
 	defer srv.Close()
 
 	urls := make(chan string, 16)
-	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml.gz", "test/1.0", 0, 4, urls)
+	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml.gz", 0, 4, urls)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -124,7 +124,7 @@ func TestFetchSitemapTransportGzip(t *testing.T) {
 	defer srv.Close()
 
 	urls := make(chan string, 16)
-	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml", "test/1.0", 0, 4, urls)
+	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml", 0, 4, urls)
 	if err != nil {
 		t.Fatalf("fetch: %v", err)
 	}
@@ -139,7 +139,7 @@ func TestFetchSitemapHTTPError(t *testing.T) {
 	defer srv.Close()
 
 	urls := make(chan string, 16)
-	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/missing.xml", "test/1.0", 0, 4, urls)
+	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/missing.xml", 0, 4, urls)
 	collect(urls)
 	if err == nil {
 		t.Fatal("expected error for 404 sitemap")
@@ -344,7 +344,7 @@ func TestRunChecksMaxAndFilter(t *testing.T) {
 
 	cfg := checkerConfig{concurrency: 4, timeout: 2 * time.Second, ratePerHost: 1000, maxURLs: 5, retries: 0}
 	results := make(chan Result, 16)
-	go runChecks(context.Background(), cfg, in, results, func(done, total int) {})
+	go runChecks(context.Background(), cfg, in, results, func(done int) {})
 
 	count := 0
 	for range results {

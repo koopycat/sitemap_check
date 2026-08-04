@@ -105,7 +105,7 @@ func main() {
 	var fetchWG sync.WaitGroup
 	fetchWG.Go(func() {
 		var stats FetchStats
-		stats, stopFetch, err := fetchSitemapURLs(ctx, fetchClient, sitemapURL, userAgent, *maxSitemaps, 8, urls)
+		stats, stopFetch, err := fetchSitemapURLs(ctx, fetchClient, sitemapURL, *maxSitemaps, 8, urls)
 		stopFetchCh <- stopFetch
 		if err == nil && stats.Skipped > 0 {
 			fmt.Fprintf(os.Stderr, "note: %d sitemap files skipped due to --max-sitemaps\n", stats.Skipped)
@@ -121,7 +121,6 @@ func main() {
 		maxURLs:     *maxURLs,
 		filter:      filterRe,
 		retries:     *retries,
-		verbose:     *verbose,
 		transport: &http.Transport{
 			MaxIdleConns:        200,
 			MaxIdleConnsPerHost: 64,
@@ -130,7 +129,7 @@ func main() {
 	}
 
 	lastPrint := time.Now()
-	progress := func(done, total int) {
+	progress := func(done int) {
 		if format != formatTable {
 			return
 		}

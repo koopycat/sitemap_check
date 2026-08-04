@@ -6,7 +6,7 @@ import (
 	"net/http"
 	"net/url"
 	"regexp"
-	"sort"
+	"slices"
 	"sync"
 	"time"
 
@@ -15,14 +15,13 @@ import (
 
 // Result is the outcome of checking one URL from the sitemap.
 type Result struct {
-	URL           string        `json:"url"`
-	Status        int           `json:"status"`
-	Location      string        `json:"location,omitempty"`
-	Attempts      int           `json:"attempts"`
-	ContentType   string        `json:"content_type,omitempty"`
-	ContentLength int64         `json:"content_length,omitempty"`
-	Duration      time.Duration `json:"duration_ns"`
-	Err           string        `json:"error,omitempty"`
+	URL         string        `json:"url"`
+	Status      int           `json:"status"`
+	Location    string        `json:"location,omitempty"`
+	Attempts    int           `json:"attempts"`
+	ContentType string        `json:"content_type,omitempty"`
+	Duration    time.Duration `json:"duration_ns"`
+	Err         string        `json:"error,omitempty"`
 }
 
 // Class returns a short classification of the result.
@@ -84,13 +83,12 @@ type checkerConfig struct {
 	maxURLs     int
 	filter      *regexp.Regexp
 	retries     int
-	verbose     bool
 	transport   *http.Transport // shared across all checks (connection reuse)
 }
 
 // runChecks consumes URLs from in, checks them concurrently, and streams
 // results. Returns when the input channel is exhausted or ctx is cancelled.
-func runChecks(ctx context.Context, cfg checkerConfig, in <-chan string, results chan<- Result, progress func(done, total int)) {
+func runChecks(ctx context.Context, cfg checkerConfig, in <-chan string, results chan<- Result, progress func(done int)) {
 	defer close(results)
 
 	jobs := make(chan string)
@@ -107,7 +105,7 @@ func runChecks(ctx context.Context, cfg checkerConfig, in <-chan string, results
 			res := checkURL(ctx, u, cfg, limiters)
 			mu.Lock()
 			checked++
-			progress(checked, seen)
+			progress(checked)
 			mu.Unlock()
 			select {
 			case results <- res:
@@ -151,7 +149,7 @@ func checkURL(ctx context.Context, rawURL string, cfg checkerConfig, limiters *h
 	res := Result{URL: rawURL, Attempts: 1}
 
 	attempts := cfg.retries + 1
-	for attempt := 0; attempt < attempts; attempt++ {
+	for attempt := range attempts {
 		if attempt > 0 {
 			backoff := time.Duration(attempt) * 500 * time.Millisecond
 			select {
@@ -224,7 +222,6 @@ func doCheck(ctx context.Context, rawURL string, cfg checkerConfig, method strin
 
 	res.Status = resp.StatusCode
 	res.ContentType = resp.Header.Get("Content-Type")
-	res.ContentLength = resp.ContentLength
 	if res.Status >= 300 && res.Status < 400 {
 		loc := resp.Header.Get("Location")
 		if loc != "" && resp.Request != nil && resp.Request.URL != nil {
@@ -240,16 +237,16 @@ func doCheck(ctx context.Context, rawURL string, cfg checkerConfig, method strin
 
 // summary aggregates all results.
 type summary struct {
-	Total        int           `json:"total"`
-	OK           int           `json:"ok"`
-	Redirects    int           `json:"redirects"`
-	ClientErrors int           `json:"client_errors"`
-	ServerErrors int           `json:"server_errors"`
-	NetErrors    int           `json:"network_errors"`
-	Other        int           `json:"other"`
-	P50          time.Duration `json:"p50_ns"`
-	P95          time.Duration `json:"p95_ns"`
-	P99          time.Duration `json:"p99_ns"`
+	Total        int           `json:"-"`
+	OK           int           `json:"-"`
+	Redirects    int           `json:"-"`
+	ClientErrors int           `json:"-"`
+	ServerErrors int           `json:"-"`
+	NetErrors    int           `json:"-"`
+	Other        int           `json:"-"`
+	P50          time.Duration `json:"-"`
+	P95          time.Duration `json:"-"`
+	P99          time.Duration `json:"-"`
 }
 
 func summarize(results []Result) summary {
@@ -272,7 +269,7 @@ func summarize(results []Result) summary {
 			s.Other++
 		}
 	}
-	sort.Slice(durations, func(i, j int) bool { return durations[i] < durations[j] })
+	slices.Sort(durations)
 	s.P50 = percentile(durations, 0.50)
 	s.P95 = percentile(durations, 0.95)
 	s.P99 = percentile(durations, 0.99)
