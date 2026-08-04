@@ -1,0 +1,62 @@
+version: "2"
+
+run:
+  tests: true
+
+linters:
+  # golangci-lint v2 enables a small default set (errcheck, govet,
+  # ineffassign, staticcheck, unused). We add widely accepted best-practice
+  # linters on top.
+  enable:
+    - errcheck # unchecked errors
+    - govet # go vet
+    - ineffassign # assignments never used
+    - staticcheck # staticcheck SA/QF/ST checks
+    - unused # dead code
+
+    - gosec # security rules (weak crypto, injection, ...)
+    - revive # golint successor: style, naming, exported comments
+    - goimports # import grouping/formatting
+    - misspell # common typos
+    - unconvert # pointless type conversions
+    - unparam # unused/constant function parameters
+    - gocritic # opinionated correctness/style checks
+    - perfsprint # faster fmt.Sprintf alternatives where trivial
+    - prealloc # slice preallocation hints
+    - bodyclose # http response bodies must be closed
+    - noctx # http requests without context
+    - copyloopvar # Go <1.22 loop variable aliasing mistakes
+    - nilerr # returning nil after checking err != nil
+    - errorlint # non-wrapped errors, == on errors, type asserts on errors
+
+  settings:
+    goimports:
+      local-prefixes: sitemap_check
+    revive:
+      rules:
+        - name: exported
+          disabled: true # internal CLI tool, doc comments not mandatory
+        - name: package-comments
+          disabled: true
+
+  exclusions:
+    presets:
+      - comments # don't nag about comment wording
+      - std-error-handling
+    rules:
+      # cobra-style os.Exit in main is fine for a CLI
+      - path: main.go
+        linters:
+          - gocritic
+      # tests may ignore errors and use context.Background freely
+      - path: _test\.go
+        linters:
+          - errcheck
+          - gosec
+          - bodyclose
+          - noctx
+          - revive
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
