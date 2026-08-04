@@ -4,3 +4,5 @@ sitemap_check
 devenv.local.nix
 .pre-commit-config.yaml
 .env
+
+.idea/
