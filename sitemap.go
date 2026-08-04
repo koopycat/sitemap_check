@@ -19,10 +19,13 @@ var errEmptySitemap = errors.New("sitemap contains no URLs")
 
 // FetchStats reports how the sitemap crawl went.
 type FetchStats struct {
-	Files   int // sitemap files successfully fetched
-	Skipped int // queued sitemaps skipped due to maxSitemaps
-	URLs    int // page URLs emitted
+	Files        int // sitemap files successfully fetched
+	Skipped      int // queued sitemaps skipped due to maxSitemaps
+	DepthSkipped int // nested sitemaps beyond maxSitemapDepth
+	URLs         int // page URLs emitted
 }
+
+const maxSitemapDepth = 5
 
 // fetchSitemapURLs recursively fetches a sitemap (or sitemap index) and
 // streams all contained page URLs to out. Sibling sitemaps are fetched
@@ -41,12 +44,11 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, max
 	}
 
 	type item struct {
-		loc string
+		loc   string
+		depth int
 	}
-	// queue must never fill up while a worker is processing an item,
-	// otherwise that worker blocks in enqueue while still holding an
-	// unfinished wg count and the whole crawl deadlocks. Generous buffer
-	// plus retry-on-full keeps this safe even for huge indexes.
+	// The queue is bounded to keep memory use predictable. Enqueue is
+	// cancellation-aware so a stopped crawl can release blocked producers.
 	queue := make(chan item, 4096)
 
 	// done is closed once every enqueued item has been processed.
@@ -81,7 +83,13 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, max
 	}
 
 	// enqueue registers loc for processing exactly once.
-	enqueue := func(loc string) {
+	enqueue := func(loc string, depth int) {
+		if depth > maxSitemapDepth {
+			mu.Lock()
+			stats.DepthSkipped++
+			mu.Unlock()
+			return
+		}
 		mu.Lock()
 		if seen[loc] || cancelled {
 			mu.Unlock()
@@ -136,7 +144,7 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, max
 		mu.Unlock()
 		if kind == "index" {
 			for _, l := range locs {
-				enqueue(l)
+				enqueue(l, it.depth+1)
 			}
 		}
 	}
@@ -145,7 +153,18 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, max
 	// IMPORTANT: the closer goroutine must be started AFTER enqueue(root).
 	// If it starts before the first wg.Add, it can observe an empty WaitGroup
 	// and close out (and done) before any work was registered.
-	enqueue(root)
+	enqueue(root, 0)
+
+	drainQueue := func() {
+		for {
+			select {
+			case <-queue:
+				wg.Done()
+			default:
+				return
+			}
+		}
+	}
 
 	go func() {
 		wg.Wait()
@@ -160,19 +179,14 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, max
 				case it := <-queue:
 					processOne(it)
 				case <-stopCh:
-					// Stop requested: mark everything still queued as done so
-					// the closer can finish and out gets closed.
-					for {
-						select {
-						case it := <-queue:
-							processOne(it)
-						default:
-							return
-						}
-					}
+					cancelAll()
+					drainQueue()
+					return
 				case <-done:
 					return
 				case <-ctx.Done():
+					cancelAll()
+					drainQueue()
 					return
 				}
 			}
@@ -224,7 +238,7 @@ func fetchAndParseSitemap(ctx context.Context, client *http.Client, loc string, 
 	//  2. file-level (*.xml.gz with Content-Type: application/x-gzip): we
 	//     must decompress it here
 	var r io.Reader = resp.Body
-	if !strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") &&
+	if !resp.Uncompressed && !strings.EqualFold(resp.Header.Get("Content-Encoding"), "gzip") &&
 		(strings.HasSuffix(strings.ToLower(loc), ".gz") ||
 			strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "gzip")) {
 		gz, gzErr := gzip.NewReader(resp.Body)

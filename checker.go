@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -84,6 +85,7 @@ type checkerConfig struct {
 	filter      *regexp.Regexp
 	retries     int
 	transport   *http.Transport // shared across all checks (connection reuse)
+	onMaxURLs   func()
 }
 
 // runChecks consumes URLs from in, checks them concurrently, and streams
@@ -99,6 +101,7 @@ func runChecks(ctx context.Context, cfg checkerConfig, in <-chan string, results
 	var mu sync.Mutex
 	seen := 0
 	checked := 0
+	var limitOnce sync.Once
 
 	worker := func() {
 		for u := range jobs {
@@ -129,6 +132,11 @@ loop:
 		seen++
 		if cfg.maxURLs > 0 && seen > cfg.maxURLs {
 			mu.Unlock()
+			limitOnce.Do(func() {
+				if cfg.onMaxURLs != nil {
+					cfg.onMaxURLs()
+				}
+			})
 			break loop
 		}
 		mu.Unlock()
@@ -147,6 +155,8 @@ loop:
 // allowed. Retries up to cfg.retries times on network errors and 5xx.
 func checkURL(ctx context.Context, rawURL string, cfg checkerConfig, limiters *hostLimiters) Result {
 	res := Result{URL: rawURL, Attempts: 1}
+	started := time.Now()
+	defer func() { res.Duration = time.Since(started) }()
 
 	attempts := cfg.retries + 1
 	for attempt := range attempts {
@@ -280,7 +290,10 @@ func percentile(sorted []time.Duration, p float64) time.Duration {
 	if len(sorted) == 0 {
 		return 0
 	}
-	idx := int(float64(len(sorted))*p + 0.5)
+	idx := int(math.Ceil(float64(len(sorted))*p)) - 1
+	if idx < 0 {
+		idx = 0
+	}
 	if idx >= len(sorted) {
 		idx = len(sorted) - 1
 	}

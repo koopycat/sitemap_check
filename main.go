@@ -4,15 +4,18 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 )
@@ -68,6 +71,11 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	if *concurrency < 1 || *timeout <= 0 || math.IsNaN(*rateLimit) || *rateLimit <= 0 ||
+		*maxURLs < 0 || *maxSitemaps < 0 || *retries < 0 {
+		fmt.Fprintln(os.Stderr, "invalid numeric flag: concurrency and timeout must be positive; rate-limit must be positive; limits and retries must be non-negative")
+		os.Exit(2)
+	}
 	sitemapURL := flag.Arg(0)
 	if !strings.HasPrefix(sitemapURL, "http://") && !strings.HasPrefix(sitemapURL, "https://") {
 		sitemapURL = "https://" + sitemapURL
@@ -98,17 +106,21 @@ func main() {
 	defer stop()
 
 	fetchClient := &http.Client{Timeout: 60 * time.Second}
+	fetchCtx, cancelFetch := context.WithCancel(ctx)
+	defer cancelFetch()
 
 	urls := make(chan string, 256)
 	fetchErr := make(chan error, 1)
-	stopFetchCh := make(chan func(), 1)
+	var maxReached atomic.Bool
 	var fetchWG sync.WaitGroup
 	fetchWG.Go(func() {
 		var stats FetchStats
-		stats, stopFetch, err := fetchSitemapURLs(ctx, fetchClient, sitemapURL, *maxSitemaps, 8, urls)
-		stopFetchCh <- stopFetch
+		stats, _, err := fetchSitemapURLs(fetchCtx, fetchClient, sitemapURL, *maxSitemaps, 8, urls)
 		if err == nil && stats.Skipped > 0 {
 			fmt.Fprintf(os.Stderr, "note: %d sitemap files skipped due to --max-sitemaps\n", stats.Skipped)
+		}
+		if err == nil && stats.DepthSkipped > 0 {
+			fmt.Fprintf(os.Stderr, "note: %d nested sitemap files skipped beyond depth %d\n", stats.DepthSkipped, maxSitemapDepth)
 		}
 		fetchErr <- err
 	})
@@ -121,6 +133,10 @@ func main() {
 		maxURLs:     *maxURLs,
 		filter:      filterRe,
 		retries:     *retries,
+		onMaxURLs: func() {
+			maxReached.Store(true)
+			cancelFetch()
+		},
 		transport: &http.Transport{
 			MaxIdleConns:        200,
 			MaxIdleConnsPerHost: 64,
@@ -150,25 +166,12 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\r%-40s\r", "") // clear progress line
 	}
 
-	// The checker has stopped consuming URLs (e.g. --max-urls reached):
-	// unblock the sitemap fetcher so it can wind down and report errors.
-	var stopFetch func()
-	select {
-	case stopFetch = <-stopFetchCh:
-	default:
-	}
-	if stopFetch != nil {
-		stopFetch()
-		fetchWG.Wait() // wait until it actually finished
-	} else {
-		// fetcher still running and has not returned its stop func yet:
-		// it can only be blocked pushing URLs into the (full) urls
-		// channel; drain until it finishes.
-		for range urls {
-		}
-	}
+	// The checker may have stopped consuming URLs (e.g. --max-urls reached).
+	// Cancel the fetch context and wait for the fetcher to close its channel.
+	cancelFetch()
+	fetchWG.Wait()
 
-	if err := <-fetchErr; err != nil {
+	if err := <-fetchErr; err != nil && !(maxReached.Load() && errors.Is(err, context.Canceled)) {
 		fmt.Fprintf(os.Stderr, "error: %v\n", err)
 		os.Exit(2)
 	}

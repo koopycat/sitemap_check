@@ -134,6 +134,103 @@ func TestFetchSitemapTransportGzip(t *testing.T) {
 	}
 }
 
+func TestFetchSitemapTransportGzipWithGzipSuffix(t *testing.T) {
+	// A transport-decoded response still has a .gz URL. The fetcher must use
+	// Response.Uncompressed and avoid attempting a second decompression.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		w.Header().Set("Content-Encoding", "gzip")
+		gzw := gzip.NewWriter(w)
+		_, _ = fmt.Fprint(gzw, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/tgz-suffix</loc></url>
+</urlset>`)
+		_ = gzw.Close()
+	}))
+	defer srv.Close()
+
+	urls := make(chan string, 4)
+	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml.gz", 0, 2, urls)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	got := collect(urls)
+	if len(got) != 1 || got[0] != "https://example.com/tgz-suffix" {
+		t.Fatalf("got %v", got)
+	}
+}
+
+func TestFetchSitemapDepthLimit(t *testing.T) {
+	mux := http.NewServeMux()
+	var base string
+	for depth := 0; depth <= maxSitemapDepth+1; depth++ {
+		path := fmt.Sprintf("/sitemap-%d.xml", depth)
+		current := depth
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			if current == maxSitemapDepth {
+				fmt.Fprint(w, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com/depth-ok</loc></url></urlset>`)
+				return
+			}
+			fmt.Fprintf(w, `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>%s/sitemap-%d.xml</loc></sitemap></sitemapindex>`, base, current+1)
+		})
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	base = srv.URL
+
+	urls := make(chan string, 4)
+	stats, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap-0.xml", 0, 2, urls)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	got := collect(urls)
+	if len(got) != 1 || got[0] != "https://example.com/depth-ok" {
+		t.Fatalf("got %v", got)
+	}
+	if stats.Files != maxSitemapDepth+1 {
+		t.Errorf("fetched %d sitemap files, want %d", stats.Files, maxSitemapDepth+1)
+	}
+}
+
+func TestFetchSitemapCancellationDrainsQueuedWork(t *testing.T) {
+	rootServed := make(chan struct{})
+	mux := http.NewServeMux()
+	var base string
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`)
+		for i := 0; i < 100; i++ {
+			fmt.Fprintf(w, `<sitemap><loc>%s/child-%d.xml</loc></sitemap>`, base, i)
+		}
+		fmt.Fprint(w, `</sitemapindex>`)
+		close(rootServed)
+	})
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	base = srv.URL
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	urls := make(chan string, 1)
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := fetchSitemapURLs(ctx, srv.Client(), srv.URL+"/sitemap.xml", 0, 2, urls)
+		done <- err
+	}()
+	select {
+	case <-rootServed:
+	case <-time.After(2 * time.Second):
+		t.Fatal("root sitemap was not served")
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("fetch did not stop after cancellation")
+	}
+}
+
 func TestFetchSitemapHTTPError(t *testing.T) {
 	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
@@ -327,6 +424,16 @@ func TestSummarize(t *testing.T) {
 	okOnly := summarize([]Result{{Status: 200}})
 	if okOnly.failed() {
 		t.Error("expected failed() to be false for all-ok")
+	}
+}
+
+func TestPercentileUsesNearestRank(t *testing.T) {
+	sorted := []time.Duration{100 * time.Millisecond, 200 * time.Millisecond}
+	if got := percentile(sorted, 0.50); got != sorted[0] {
+		t.Errorf("p50 = %s, want %s", got, sorted[0])
+	}
+	if got := percentile(sorted, 0.99); got != sorted[1] {
+		t.Errorf("p99 = %s, want %s", got, sorted[1])
 	}
 }
 
