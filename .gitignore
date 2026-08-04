@@ -1,0 +1,6 @@
+sitemap_check
+*.out
+.devenv*
+devenv.local.nix
+.pre-commit-config.yaml
+.env
