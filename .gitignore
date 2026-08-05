@@ -6,3 +6,6 @@ devenv.local.nix
 .env
 
 .idea/
+.research/
+.lavish/
+.omo/

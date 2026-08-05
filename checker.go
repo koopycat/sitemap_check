@@ -91,6 +91,13 @@ type checkerConfig struct {
 // runChecks consumes URLs from in, checks them concurrently, and streams
 // results. Returns when the input channel is exhausted or ctx is cancelled.
 func runChecks(ctx context.Context, cfg checkerConfig, in <-chan string, results chan<- Result, progress func(done int)) {
+	runChecksObserved(ctx, cfg, in, results, progress, nil)
+}
+
+// runChecksObserved is runChecks with lifecycle instrumentation. The observer
+// receives small, synchronous state transitions; it must not perform terminal
+// I/O or other blocking work.
+func runChecksObserved(ctx context.Context, cfg checkerConfig, in <-chan string, results chan<- Result, progress func(done int), observer scanObserver) {
 	defer close(results)
 
 	jobs := make(chan string)
@@ -105,10 +112,14 @@ func runChecks(ctx context.Context, cfg checkerConfig, in <-chan string, results
 
 	worker := func() {
 		for u := range jobs {
-			res := checkURL(ctx, u, cfg, limiters)
+			observeScanEvent(observer, scanEvent{kind: eventCheckStarted, url: u})
+			res := checkURLObserved(ctx, u, cfg, limiters, observer)
+			observeScanEvent(observer, scanEvent{kind: eventCheckCompleted, url: u, result: res})
 			mu.Lock()
 			checked++
-			progress(checked)
+			if progress != nil {
+				progress(checked)
+			}
 			mu.Unlock()
 			select {
 			case results <- res:
@@ -141,12 +152,17 @@ loop:
 		}
 		mu.Unlock()
 
+		observeScanEvent(observer, scanEvent{kind: eventCheckQueued, url: u})
 		select {
 		case jobs <- u:
 		case <-ctx.Done():
 			break loop
 		}
 	}
+	// At this point every accepted URL has been counted and handed to a
+	// worker. Unlike producer-side channel closure, this is the point where
+	// the progress denominator is guaranteed not to grow again.
+	observeScanEvent(observer, scanEvent{kind: eventDiscoveryCompleted})
 	close(jobs)
 	wg.Wait()
 }
@@ -154,6 +170,10 @@ loop:
 // checkURL checks a single URL: HEAD first, GET fallback if HEAD is not
 // allowed. Retries up to cfg.retries times on network errors and 5xx.
 func checkURL(ctx context.Context, rawURL string, cfg checkerConfig, limiters *hostLimiters) Result {
+	return checkURLObserved(ctx, rawURL, cfg, limiters, nil)
+}
+
+func checkURLObserved(ctx context.Context, rawURL string, cfg checkerConfig, limiters *hostLimiters, observer scanObserver) Result {
 	res := Result{URL: rawURL, Attempts: 1}
 	started := time.Now()
 	defer func() { res.Duration = time.Since(started) }()
@@ -161,6 +181,14 @@ func checkURL(ctx context.Context, rawURL string, cfg checkerConfig, limiters *h
 	attempts := cfg.retries + 1
 	for attempt := range attempts {
 		if attempt > 0 {
+			reason := res.Err
+			if reason == "" && res.Status > 0 {
+				reason = http.StatusText(res.Status)
+			}
+			observeScanEvent(observer, scanEvent{
+				kind: eventCheckRetrying, url: rawURL,
+				attempt: attempt + 1, maxAttempts: attempts, err: reason,
+			})
 			backoff := time.Duration(attempt) * 500 * time.Millisecond
 			select {
 			case <-time.After(backoff):

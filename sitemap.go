@@ -37,6 +37,13 @@ const maxSitemapDepth = 5
 // reached) via the returned stop function; any queued sitemap files are
 // then drained without fetching and out is closed.
 func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, maxSitemaps, workers int, out chan string) (FetchStats, func(), error) {
+	return fetchSitemapURLsObserved(ctx, client, root, maxSitemaps, workers, out, nil)
+}
+
+// fetchSitemapURLsObserved is fetchSitemapURLs with semantic lifecycle
+// events. Keeping the public-in-package wrapper above preserves the scanner's
+// existing test and call surface.
+func fetchSitemapURLsObserved(ctx context.Context, client *http.Client, root string, maxSitemaps, workers int, out chan string, observer scanObserver) (FetchStats, func(), error) {
 	var stats FetchStats
 
 	if workers < 1 {
@@ -98,6 +105,7 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, max
 		seen[loc] = true
 		mu.Unlock()
 		wg.Add(1)
+		observeScanEvent(observer, scanEvent{kind: eventSitemapQueued, url: loc})
 		for {
 			select {
 			case queue <- item{loc: loc}:
@@ -129,8 +137,10 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, max
 		fetched++
 		mu.Unlock()
 
-		kind, locs, n, err := fetchAndParseSitemap(ctx, client, it.loc, stopCh, out)
+		observeScanEvent(observer, scanEvent{kind: eventSitemapStarted, url: it.loc})
+		kind, locs, n, err := fetchAndParseSitemapObserved(ctx, client, it.loc, stopCh, out, observer)
 		if err != nil {
+			observeScanEvent(observer, scanEvent{kind: eventSitemapFailed, url: it.loc, err: err.Error()})
 			mu.Lock()
 			if firstErr == nil {
 				firstErr = fmt.Errorf("fetching sitemap %s: %w", it.loc, err)
@@ -138,6 +148,7 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, max
 			mu.Unlock()
 			return
 		}
+		observeScanEvent(observer, scanEvent{kind: eventSitemapCompleted, url: it.loc})
 		mu.Lock()
 		stats.Files++
 		stats.URLs += n
@@ -205,6 +216,9 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, max
 	if stats.URLs == 0 && firstErr == nil {
 		firstErr = errEmptySitemap
 	}
+	observeScanEvent(observer, scanEvent{
+		kind: eventSitemapDiscoveryCompleted, skipped: stats.Skipped, depthSkipped: stats.DepthSkipped,
+	})
 	return stats, requestStop, firstErr
 }
 
@@ -216,6 +230,10 @@ func fetchSitemapURLs(ctx context.Context, client *http.Client, root string, max
 // It reports whether it was asked to stop via the stop channel; in that
 // case the parse aborts early without error.
 func fetchAndParseSitemap(ctx context.Context, client *http.Client, loc string, stop <-chan struct{}, out chan<- string) (kind string, locs []string, n int, err error) {
+	return fetchAndParseSitemapObserved(ctx, client, loc, stop, out, nil)
+}
+
+func fetchAndParseSitemapObserved(ctx context.Context, client *http.Client, loc string, stop <-chan struct{}, out chan<- string, observer scanObserver) (kind string, locs []string, n int, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
 	if err != nil {
 		return "", nil, 0, err
@@ -288,6 +306,7 @@ func fetchAndParseSitemap(ctx context.Context, client *http.Client, loc string, 
 				select {
 				case out <- text:
 					n++
+					observeScanEvent(observer, scanEvent{kind: eventURLDiscovered, url: text})
 				case <-stop:
 					return kind, locs, n, nil
 				case <-ctx.Done():
