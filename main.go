@@ -20,7 +20,8 @@ import (
 	"time"
 )
 
-const version = "0.1.0"
+// version is overridden by the release build using -ldflags.
+var version = "0.1.0"
 
 var userAgent = "sitemap_check/" + version
 

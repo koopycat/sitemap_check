@@ -91,3 +91,14 @@ golangci-lint run ./...
 ```
 
 Linting uses [golangci-lint](https://golangci-lint.run) (config in `.golangci.yml`): errcheck, govet, staticcheck, gosec, revive, gocritic, errorlint, bodyclose, noctx and more, plus gofmt/goimports formatting (`golangci-lint fmt`).
+
+## Releasing
+
+Push a semantic-version tag to build and publish a GitHub release:
+
+```bash
+git tag -a v0.1.0 -m "v0.1.0"
+git push origin v0.1.0
+```
+
+The release workflow runs the race-enabled test suite, builds Linux, macOS, and Windows archives for amd64 and arm64, injects the tag into `--version`, and publishes SHA-256 checksums with generated release notes. Tags with a prerelease suffix, such as `v0.2.0-rc.1`, create a GitHub prerelease.
