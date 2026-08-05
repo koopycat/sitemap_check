@@ -191,6 +191,85 @@ func TestFetchSitemapDepthLimit(t *testing.T) {
 	}
 }
 
+func TestFetchSitemapDepthLimitEnforced(t *testing.T) {
+	// The chain runs one level beyond maxSitemapDepth; the final urlset must
+	// never be fetched and the skip must be accounted for.
+	mux := http.NewServeMux()
+	var base string
+	for depth := 0; depth <= maxSitemapDepth+1; depth++ {
+		path := fmt.Sprintf("/sitemap-%d.xml", depth)
+		current := depth
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			if current > maxSitemapDepth {
+				fmt.Fprint(w, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com/too-deep</loc></url></urlset>`)
+				return
+			}
+			fmt.Fprintf(w, `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><sitemap><loc>%s/sitemap-%d.xml</loc></sitemap></sitemapindex>`, base, current+1)
+		})
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	base = srv.URL
+
+	urls := make(chan string, 4)
+	stats, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap-0.xml", 0, 2, urls)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	got := collect(urls)
+	if len(got) != 0 {
+		t.Errorf("emitted %d URLs, want 0 (the urlset lies beyond maxSitemapDepth)", len(got))
+	}
+	if stats.DepthSkipped != 1 {
+		t.Errorf("depth-skipped %d sitemap files, want 1", stats.DepthSkipped)
+	}
+	if stats.Files != maxSitemapDepth+1 {
+		t.Errorf("fetched %d sitemap files, want %d", stats.Files, maxSitemapDepth+1)
+	}
+}
+
+func TestFetchSitemapMaxSitemaps(t *testing.T) {
+	mux := http.NewServeMux()
+	var base string
+	mux.HandleFunc("/sitemap.xml", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <sitemap><loc>%s/child-1.xml</loc></sitemap>
+  <sitemap><loc>%s/child-2.xml</loc></sitemap>
+  <sitemap><loc>%s/child-3.xml</loc></sitemap>
+</sitemapindex>`, base, base, base)
+	})
+	for i := 1; i <= 3; i++ {
+		path := fmt.Sprintf("/child-%d.xml", i)
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprintf(w, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">
+  <url><loc>https://example.com/u-%s</loc></url>
+  <url><loc>https://example.com/v-%s</loc></url>
+</urlset>`, r.URL.Path, r.URL.Path)
+		})
+	}
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	base = srv.URL
+
+	urls := make(chan string, 16)
+	// workers=1 keeps the fetch order deterministic: the root plus one child
+	// are fetched, the remaining two children are skipped by --max-sitemaps.
+	stats, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml", 2, 1, urls)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	got := collect(urls)
+	if stats.Files != 2 {
+		t.Errorf("fetched %d sitemap files, want 2", stats.Files)
+	}
+	if stats.Skipped != 2 {
+		t.Errorf("skipped %d sitemap files, want 2", stats.Skipped)
+	}
+	if len(got) != 2 {
+		t.Errorf("emitted %d URLs, want 2 (only the fetched child's URLs)", len(got))
+	}
+}
+
 func TestFetchSitemapCancellationDrainsQueuedWork(t *testing.T) {
 	rootServed := make(chan struct{})
 	mux := http.NewServeMux()

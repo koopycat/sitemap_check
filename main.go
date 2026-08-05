@@ -174,6 +174,13 @@ func main() {
 	var maxReached atomic.Bool
 
 	results := make(chan Result, 256)
+	transport := &http.Transport{
+		MaxIdleConns:        200,
+		MaxIdleConnsPerHost: 64,
+		IdleConnTimeout:     60 * time.Second,
+		// Honor HTTP(S)_PROXY like the sitemap fetch (DefaultTransport) does.
+		Proxy: http.ProxyFromEnvironment,
+	}
 	cfg := checkerConfig{
 		concurrency: *concurrency,
 		timeout:     *timeout,
@@ -185,10 +192,15 @@ func main() {
 			maxReached.Store(true)
 			cancelFetch()
 		},
-		transport: &http.Transport{
-			MaxIdleConns:        200,
-			MaxIdleConnsPerHost: 64,
-			IdleConnTimeout:     60 * time.Second,
+		transport: transport,
+		client: &http.Client{
+			Timeout:   *timeout,
+			Transport: transport,
+			// Never follow redirects: a sitemap check should report what the
+			// listed URL itself returns (301/302/...), not its target.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
 		},
 	}
 
@@ -203,7 +215,7 @@ func main() {
 	cancelFetch()
 	fetch := <-fetchDone
 	cancelled := scanCtx.Err() != nil
-	fetchFailed := fetch.err != nil && !(maxReached.Load() && errors.Is(fetch.err, context.Canceled)) && !cancelled
+	fetchFailed := fetch.err != nil && (!maxReached.Load() || !errors.Is(fetch.err, context.Canceled)) && !cancelled
 	if fetchFailed {
 		monitor.Observe(scanEvent{kind: eventScanFailed, err: fetch.err.Error()})
 	} else {

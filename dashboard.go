@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
@@ -235,7 +236,9 @@ func (m dashboardModel) filteredResults() []Result {
 			continue
 		}
 		if query != "" {
-			haystack := strings.ToLower(strings.Join([]string{r.URL, r.Location, r.Err, fmt.Sprint(r.Status)}, " "))
+			// Failures and redirects are more actionable first in the default view.
+			// Show-all preserves newest-first order from the monitor's rolling window.
+			haystack := strings.ToLower(strings.Join([]string{r.URL, r.Location, r.Err, strconv.Itoa(r.Status)}, " "))
 			if !strings.Contains(haystack, query) {
 				continue
 			}
@@ -249,9 +252,8 @@ func (m dashboardModel) filteredResults() []Result {
 			return resultPriority(results[i]) > resultPriority(results[j])
 		})
 	}
-	if m.selected >= len(results) {
-		m.selected = maxInt(0, len(results)-1)
-	}
+	// Selection safety is handled at render time (renderDetail clamps with
+	// minInt); the field can legitimately point past a shrunken list.
 	return results
 }
 
@@ -282,19 +284,17 @@ func (m dashboardModel) render() string {
 		h = 24
 	}
 	var lines []string
-	if m.help {
+	switch {
+	case m.help:
 		lines = m.renderHelp(w)
-	} else if m.detail {
+	case m.detail:
 		lines = m.renderDetail(w)
-	} else {
-		switch {
-		case w >= 110 && h >= 24:
-			lines = m.renderFull(w)
-		case w >= 70 && h >= 16:
-			lines = m.renderStacked(w)
-		default:
-			lines = m.renderEssential(w)
-		}
+	case w >= 110 && h >= 24:
+		lines = m.renderFull(w)
+	case w >= 70 && h >= 16:
+		lines = m.renderStacked(w)
+	default:
+		lines = m.renderEssential(w)
 	}
 	if m.filtering {
 		lines = append(lines, m.filter.View())
@@ -323,13 +323,14 @@ func (m dashboardModel) header() string {
 		name = "sitemap scan"
 	}
 	status := "RUNNING"
-	if m.snap.err != "" {
+	switch {
+	case m.snap.err != "":
 		status = "FAILED"
-	} else if m.snap.done && m.snap.cancelled {
+	case m.snap.done && m.snap.cancelled:
 		status = "CANCELLED"
-	} else if m.snap.done {
+	case m.snap.done:
 		status = "COMPLETE"
-	} else if m.cancelling || m.snap.cancelled {
+	case m.cancelling || m.snap.cancelled:
 		status = "CANCELLING"
 	}
 	return titleStyle.Render("SITEMAP CHECK") + "  " + fitPlain(name, 52) + "  " + mutedStyle.Render(status+" · "+dashboardElapsed(m.elapsed()))
@@ -350,7 +351,8 @@ func (m dashboardModel) elapsed() time.Duration {
 }
 
 func (m dashboardModel) renderFull(w int) []string {
-	lines := []string{m.header(), "", m.progressLine(w), m.healthLine(), ""}
+	lines := make([]string, 0, 10)
+	lines = append(lines, m.header(), "", m.progressLine(w), m.healthLine(), "")
 	lines = append(lines, m.metricsLine())
 	lines = append(lines, m.sitemapLine())
 	lines = append(lines, "", titleStyle.Render("RECENT RESULTS")+"  "+mutedStyle.Render("failures + redirects first"))
@@ -360,7 +362,8 @@ func (m dashboardModel) renderFull(w int) []string {
 }
 
 func (m dashboardModel) renderStacked(w int) []string {
-	lines := []string{m.header(), m.progressLine(w), m.healthLine(), m.metricsLine(), ""}
+	lines := make([]string, 0, 8)
+	lines = append(lines, m.header(), m.progressLine(w), m.healthLine(), m.metricsLine(), "")
 	lines = append(lines, m.resultLines(maxInt(2, m.height-7), w)...)
 	lines = append(lines, m.footer())
 	return lines
@@ -404,11 +407,12 @@ func (m dashboardModel) progressLine(width int) string {
 		}
 	}
 	phase := "CHECKING"
-	if m.snap.err != "" {
+	switch {
+	case m.snap.err != "":
 		phase = "FAILED"
-	} else if m.snap.done && m.snap.cancelled {
+	case m.snap.done && m.snap.cancelled:
 		phase = "CANCELLED"
-	} else if m.snap.done {
+	case m.snap.done:
 		phase = "COMPLETE"
 	}
 	progress := fmt.Sprintf("%d%% (%d/%d)", pct, checked, total)
@@ -486,7 +490,7 @@ func statusCode(r Result) string {
 	if r.Status == 0 {
 		return "—"
 	}
-	return fmt.Sprint(r.Status)
+	return strconv.Itoa(r.Status)
 }
 
 func (m dashboardModel) footer() string {
@@ -517,16 +521,16 @@ func (m dashboardModel) renderDetail(w int) []string {
 	}
 	r := results[minInt(m.selected, len(results)-1)]
 	lines = append(lines,
-		fmt.Sprintf("URL      %s", fitPlain(r.URL, maxInt(20, w-9))),
-		fmt.Sprintf("CLASS    %s", strings.ToUpper(r.Class())),
-		fmt.Sprintf("STATUS   %s", statusCode(r)),
+		"URL      "+fitPlain(r.URL, maxInt(20, w-9)),
+		"CLASS    "+strings.ToUpper(r.Class()),
+		"STATUS   "+statusCode(r),
 		fmt.Sprintf("DURATION %s · attempts %d", dashboardDuration(r.Duration), r.Attempts),
 	)
 	if r.Location != "" {
-		lines = append(lines, fmt.Sprintf("LOCATION %s", fitPlain(r.Location, maxInt(20, w-10))))
+		lines = append(lines, "LOCATION "+fitPlain(r.Location, maxInt(20, w-10)))
 	}
 	if r.ContentType != "" {
-		lines = append(lines, fmt.Sprintf("TYPE     %s", fitPlain(r.ContentType, maxInt(20, w-10))))
+		lines = append(lines, "TYPE     "+fitPlain(r.ContentType, maxInt(20, w-10)))
 	}
 	if r.Err != "" {
 		lines = append(lines, badStyle.Render("ERROR    "+fitPlain(r.Err, maxInt(20, w-10))))

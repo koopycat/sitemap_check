@@ -108,18 +108,19 @@ func fileIsTerminal(f *os.File) bool {
 // ETA because its eventual total is not known yet.
 func formatPlainProgress(s scanSnapshot) string {
 	phase := "checking"
-	if !s.discoveryDone {
+	switch {
+	case !s.discoveryDone:
 		phase = "discovering"
 		if s.sitemapDiscoveryDone {
 			phase = "finalizing"
 		}
-	} else if s.err != "" {
+	case s.err != "":
 		phase = "failed"
-	} else if s.done && s.cancelled {
+	case s.done && s.cancelled:
 		phase = "cancelled"
-	} else if s.cancelled {
+	case s.cancelled:
 		phase = "cancelling"
-	} else if s.done {
+	case s.done:
 		phase = "complete"
 	}
 	denominator := s.totalChecks

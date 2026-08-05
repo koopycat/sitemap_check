@@ -47,16 +47,6 @@ type scanObserver interface {
 	Observe(scanEvent)
 }
 
-// scanObserverFunc adapts a function to scanObserver. A nil function is a
-// safe no-op, which is convenient for optional progress reporting.
-type scanObserverFunc func(scanEvent)
-
-func (f scanObserverFunc) Observe(e scanEvent) {
-	if f != nil {
-		f(e)
-	}
-}
-
 func observeScanEvent(observer scanObserver, event scanEvent) {
 	if observer != nil {
 		observer.Observe(event)

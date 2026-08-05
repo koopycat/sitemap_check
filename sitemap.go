@@ -108,7 +108,7 @@ func fetchSitemapURLsObserved(ctx context.Context, client *http.Client, root str
 		observeScanEvent(observer, scanEvent{kind: eventSitemapQueued, url: loc})
 		for {
 			select {
-			case queue <- item{loc: loc}:
+			case queue <- item{loc: loc, depth: depth}:
 				return
 			case <-stopCh:
 				wg.Done()
@@ -213,7 +213,9 @@ func fetchSitemapURLsObserved(ctx context.Context, client *http.Client, root str
 
 	mu.Lock()
 	defer mu.Unlock()
-	if stats.URLs == 0 && firstErr == nil {
+	// A crawl truncated by limits or cancellation is not an "empty sitemap":
+	// the counters say we deliberately stopped early.
+	if stats.URLs == 0 && firstErr == nil && stats.Skipped == 0 && stats.DepthSkipped == 0 && !cancelled {
 		firstErr = errEmptySitemap
 	}
 	observeScanEvent(observer, scanEvent{
@@ -222,17 +224,13 @@ func fetchSitemapURLsObserved(ctx context.Context, client *http.Client, root str
 	return stats, requestStop, firstErr
 }
 
-// fetchAndParseSitemap downloads one sitemap document and parses it
+// fetchAndParseSitemapObserved downloads one sitemap document and parses it
 // incrementally. For a urlset, URLs are sent to out directly (n = number of
 // URLs emitted). For a sitemapindex, the nested sitemap locations are
 // returned in locs.
 //
 // It reports whether it was asked to stop via the stop channel; in that
 // case the parse aborts early without error.
-func fetchAndParseSitemap(ctx context.Context, client *http.Client, loc string, stop <-chan struct{}, out chan<- string) (kind string, locs []string, n int, err error) {
-	return fetchAndParseSitemapObserved(ctx, client, loc, stop, out, nil)
-}
-
 func fetchAndParseSitemapObserved(ctx context.Context, client *http.Client, loc string, stop <-chan struct{}, out chan<- string, observer scanObserver) (kind string, locs []string, n int, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
 	if err != nil {

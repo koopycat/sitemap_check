@@ -85,6 +85,7 @@ type checkerConfig struct {
 	filter      *regexp.Regexp
 	retries     int
 	transport   *http.Transport // shared across all checks (connection reuse)
+	client      *http.Client    // optional shared client; built per check when nil
 	onMaxURLs   func()
 }
 
@@ -226,18 +227,21 @@ func doCheck(ctx context.Context, rawURL string, cfg checkerConfig, method strin
 	res := Result{URL: rawURL}
 	start := time.Now()
 
-	transport := cfg.transport
-	if transport == nil {
-		transport = http.DefaultTransport.(*http.Transport)
-	}
-	client := &http.Client{
-		Timeout:   cfg.timeout,
-		Transport: transport,
-		// Never follow redirects: a sitemap check should report what the
-		// listed URL itself returns (301/302/...), not its target.
-		CheckRedirect: func(req *http.Request, via []*http.Request) error {
-			return http.ErrUseLastResponse
-		},
+	client := cfg.client
+	if client == nil {
+		transport := cfg.transport
+		if transport == nil {
+			transport = http.DefaultTransport.(*http.Transport)
+		}
+		client = &http.Client{
+			Timeout:   cfg.timeout,
+			Transport: transport,
+			// Never follow redirects: a sitemap check should report what the
+			// listed URL itself returns (301/302/...), not its target.
+			CheckRedirect: func(req *http.Request, via []*http.Request) error {
+				return http.ErrUseLastResponse
+			},
+		}
 	}
 
 	req, err := http.NewRequestWithContext(ctx, method, rawURL, nil)
@@ -318,10 +322,7 @@ func percentile(sorted []time.Duration, p float64) time.Duration {
 	if len(sorted) == 0 {
 		return 0
 	}
-	idx := int(math.Ceil(float64(len(sorted))*p)) - 1
-	if idx < 0 {
-		idx = 0
-	}
+	idx := max(int(math.Ceil(float64(len(sorted))*p))-1, 0)
 	if idx >= len(sorted) {
 		idx = len(sorted) - 1
 	}
