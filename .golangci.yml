@@ -64,4 +64,5 @@ formatters:
     - goimports
   settings:
     goimports:
-      local-prefixes: sitemap_check
+      local-prefixes:
+        - sitemap_check
