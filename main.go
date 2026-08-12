@@ -1,5 +1,6 @@
 // Command sitemap_check fetches an XML sitemap (or sitemap index) and checks
-// every contained URL for availability.
+// every contained URL for availability. It can also check URLs supplied
+// directly with --url or --urls.
 package main
 
 import (
@@ -13,7 +14,6 @@ import (
 	"os"
 	"os/signal"
 	"regexp"
-	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -29,7 +29,9 @@ func usage() {
 	fmt.Fprintf(os.Stderr, `sitemap_check %s - check all URLs contained in an XML sitemap
 
 Usage:
-  sitemap_check [flags] <sitemap-url>
+  sitemap_check [flags] [<sitemap-url>]
+
+At least one sitemap URL, --url, or --urls source is required.
 
 Flags:
 `, version)
@@ -41,40 +43,48 @@ Exit codes:
   2  usage error or sitemap could not be fetched
   130 scan cancelled by the user
 
-Example:
+Examples:
   sitemap_check -c 30 --rate-limit 5 https://www.wago.com/pl/sitemap.xml
+  sitemap_check --url https://example.com/a --url example.com/b
+  sitemap_check --urls /tmp/urls.txt
+  sitemap_check --urls - < /tmp/urls.txt
+  sitemap_check https://example.com/sitemap.xml --url https://example.com/extra
 `)
 }
 
 func main() {
 	var (
-		concurrency = flag.Int("c", 20, "number of parallel requests")
-		timeout     = flag.Duration("timeout", 10*time.Second, "per-request timeout")
-		rateLimit   = flag.Float64("rate-limit", 10, "max requests per second per host")
-		maxURLs     = flag.Int("max-urls", 0, "stop after N URLs (0 = no limit)")
-		maxSitemaps = flag.Int("max-sitemaps", 0, "stop after N nested sitemap files (0 = no limit)")
-		filter      = flag.String("filter", "", "regex: only check matching URLs")
-		output      = flag.String("o", "table", "output format: table|json|csv")
-		outFile     = flag.String("f", "", "write report to file instead of stdout")
-		verbose     = flag.Bool("v", false, "list every URL, not just failures")
-		retries     = flag.Int("retries", 1, "retries per URL on network errors and 5xx")
-		failOnRedir = flag.Bool("fail-on-redirects", false, "treat redirected sitemap URLs as failures (exit code 1)")
-		uiStyle     = flag.String("ui", "auto", "live UI: auto|dashboard|plain|off")
-		colorStyle  = flag.String("color", "auto", "color output: auto|always|never")
-		showVersion = flag.Bool("version", false, "print version and exit")
-		ua          = flag.String("user-agent", "", "custom User-Agent header (default sitemap_check/<version>)")
-		quiet       bool
+		concurrency  = flag.Int("c", 20, "number of parallel requests")
+		timeout      = flag.Duration("timeout", 10*time.Second, "per-request timeout")
+		rateLimit    = flag.Float64("rate-limit", 10, "max requests per second per host")
+		maxURLs      = flag.Int("max-urls", 0, "stop after N URLs (0 = no limit)")
+		maxSitemaps  = flag.Int("max-sitemaps", 0, "stop after N nested sitemap files (0 = no limit)")
+		filter       = flag.String("filter", "", "regex: only check matching URLs")
+		output       = flag.String("o", "table", "output format: table|json|csv")
+		outFile      = flag.String("f", "", "write report to file instead of stdout")
+		verbose      = flag.Bool("v", false, "list every URL, not just failures")
+		retries      = flag.Int("retries", 1, "retries per URL on network errors and 5xx")
+		failOnRedir  = flag.Bool("fail-on-redirects", false, "treat redirected sitemap URLs as failures (exit code 1)")
+		uiStyle      = flag.String("ui", "auto", "live UI: auto|dashboard|plain|off")
+		colorStyle   = flag.String("color", "auto", "color output: auto|always|never")
+		showVersion  = flag.Bool("version", false, "print version and exit")
+		ua           = flag.String("user-agent", "", "custom User-Agent header (default sitemap_check/<version>)")
+		urlsFile     = flag.String("urls", "", "read one URL per line from FILE (- for stdin)")
+		explicitURLs repeatableString
+		quiet        bool
 	)
 	flag.BoolVar(&quiet, "q", false, "suppress live progress")
 	flag.BoolVar(&quiet, "quiet", false, "suppress live progress")
+	flag.Var(&explicitURLs, "url", "check URL (repeatable; may be used without a sitemap)")
 	flag.Usage = usage
+	os.Args = append([]string{os.Args[0]}, reorderArgs(os.Args[1:])...)
 	flag.Parse()
 
 	if *showVersion {
 		fmt.Println(version)
 		os.Exit(0)
 	}
-	if flag.NArg() != 1 {
+	if flag.NArg() > 1 || (flag.NArg() == 0 && len(explicitURLs) == 0 && *urlsFile == "") {
 		usage()
 		os.Exit(2)
 	}
@@ -83,9 +93,14 @@ func main() {
 		fmt.Fprintln(os.Stderr, "invalid numeric flag: concurrency and timeout must be positive; rate-limit must be positive; limits and retries must be non-negative")
 		os.Exit(2)
 	}
-	sitemapURL := flag.Arg(0)
-	if !strings.HasPrefix(sitemapURL, "http://") && !strings.HasPrefix(sitemapURL, "https://") {
-		sitemapURL = "https://" + sitemapURL
+	sitemapURL := ""
+	if flag.NArg() == 1 {
+		sitemapURL = normalizeListURL(flag.Arg(0))
+	}
+	listURLs, err := loadListURLs(explicitURLs, *urlsFile, os.Stdin)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(2)
 	}
 	if *ua != "" {
 		userAgent = *ua
@@ -130,7 +145,11 @@ func main() {
 	scanCtx, cancelScan := context.WithCancel(signalCtx)
 	defer cancelScan()
 
-	monitor := newScanMonitor(sitemapURL, time.Now)
+	rootURL := sitemapURL
+	if rootURL == "" && len(listURLs) > 0 {
+		rootURL = listURLs[0]
+	}
+	monitor := newScanMonitor(rootURL, time.Now)
 	monitor.Observe(scanEvent{kind: eventScanStarted})
 	var cancelOnce sync.Once
 	requestCancel := func() {
@@ -151,7 +170,7 @@ func main() {
 	var plain *plainProgressSession
 	switch resolvedUI {
 	case uiDashboard:
-		dashboard = startDashboard(sitemapURL, monitor, requestCancel, os.Stdin, os.Stderr, requestedColor, colorEnabled)
+		dashboard = startDashboard(rootURL, monitor, requestCancel, os.Stdin, os.Stderr, requestedColor, colorEnabled)
 	case uiPlain:
 		plain = startPlainProgress(os.Stderr, monitor.Snapshot, stderrTTY)
 	}
@@ -165,10 +184,27 @@ func main() {
 		err   error
 	}
 	urls := make(chan string, 256)
+	sitemapURLs := make(chan string, 256)
 	fetchDone := make(chan fetchOutcome, 1)
+	if sitemapURL != "" {
+		go func() {
+			stats, _, fetchErr := fetchSitemapURLsObserved(fetchCtx, fetchClient, sitemapURL, *maxSitemaps, 8, sitemapURLs, monitor)
+			fetchDone <- fetchOutcome{stats: stats, err: fetchErr}
+		}()
+	} else {
+		close(sitemapURLs)
+		fetchDone <- fetchOutcome{}
+	}
 	go func() {
-		stats, _, fetchErr := fetchSitemapURLsObserved(fetchCtx, fetchClient, sitemapURL, *maxSitemaps, 8, urls, monitor)
-		fetchDone <- fetchOutcome{stats: stats, err: fetchErr}
+		defer close(urls)
+		if !forwardURLSources(fetchCtx, sitemapURLs, listURLs, urls, monitor) {
+			return
+		}
+		// Sitemap discovery emits this event itself. A list-only scan has no
+		// sitemap producer, so mark its source complete here.
+		if sitemapURL == "" {
+			monitor.Observe(scanEvent{kind: eventSitemapDiscoveryCompleted})
+		}
 	}()
 
 	var maxReached atomic.Bool

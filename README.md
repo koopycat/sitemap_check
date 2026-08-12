@@ -1,6 +1,7 @@
 # sitemap_check
 
 CLI tool that fetches an XML sitemap (or sitemap index) and checks every contained URL for availability.
+It can also check explicit URL lists supplied on the command line or through a file.
 
 ## Features
 
@@ -18,7 +19,7 @@ CLI tool that fetches an XML sitemap (or sitemap index) and checks every contain
 ## Usage
 
 ```
-sitemap_check [flags] <sitemap-url>
+sitemap_check [flags] [<sitemap-url>]
 
 Flags:
   -c int                number of parallel requests (default 20)
@@ -36,6 +37,8 @@ Flags:
   --color string        color output: auto|always|never (default "auto")
   -q, --quiet           suppress live progress
   --user-agent string   custom User-Agent header
+  --url string          check URL (repeatable; may be used without a sitemap)
+  --urls string         read one URL per line from FILE (- for stdin)
   --version             print version and exit
 ```
 
@@ -43,7 +46,20 @@ Flags:
 
 ```bash
 # full check of the WAGO Poland sitemap (index -> cms + commerce sitemaps)
+# Sitemap URLs are checked before any explicit list URLs.
 sitemap_check https://www.wago.com/pl/sitemap.xml
+
+# check an explicit URL list without a sitemap (--url is repeatable)
+sitemap_check --url https://example.com/a --url example.com/b
+
+# read one URL per line; blank lines and lines beginning with # are ignored
+sitemap_check --urls /tmp/urls.txt
+
+# read the URL list from stdin
+sitemap_check --urls - < /tmp/urls.txt
+
+# combine a sitemap with extra URLs; sitemap discovery runs first
+sitemap_check https://example.com/sitemap.xml --url https://example.com/extra
 
 # quick smoke test of the first 50 URLs, JSON report to file
 sitemap_check --max-urls 50 -o json -f report.json https://www.wago.com/pl/sitemap.xml
@@ -65,6 +81,11 @@ The table report always lists failing URLs (4xx, 5xx, network errors) and redire
 Sitemaps should list final URLs, so redirects are worth flagging: use `--fail-on-redirects` in CI to make them fail the run.
 
 Live progress is always written to stderr, while the final table, JSON, or CSV report is written to stdout (or the file selected by `-f`). This keeps pipelines machine-readable.
+
+`--url` may be repeated, and `--urls FILE` reads one URL per line (`-` means stdin).
+List lines are trimmed, blank lines and lines beginning with `#` are ignored, and scheme-less URLs receive an `https://` prefix.
+When both sources are provided, sitemap URLs are checked before explicit list URLs.
+All list URLs use the same checking, filtering, limiting, retry, rate-limiting, redirect, reporting, and exit-code behavior as sitemap URLs.
 
 `--ui auto` opens the full-screen dashboard when both stdin and stderr are terminals. It falls back to durable, ANSI-free status lines for pipes, CI, `TERM=dumb`, and other non-interactive environments. Use `--ui dashboard`, `--ui plain`, or `--ui off` to choose explicitly; `-q` and `--quiet` are aliases for `--ui off`.
 
