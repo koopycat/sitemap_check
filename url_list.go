@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"flag"
 	"fmt"
 	"io"
 	"os"
@@ -133,36 +134,24 @@ func forwardURLSources(ctx context.Context, sitemap <-chan string, listURLs []st
 	return emitURLList(ctx, out, listURLs, observer)
 }
 
-// reorderArgs allows the Go flag package to accept the sitemap positional
-// argument either before or after flags, while retaining normal flag parsing.
-func reorderArgs(args []string) []string {
-	valueFlags := map[string]bool{
-		"-c": true, "--timeout": true, "--rate-limit": true, "--max-urls": true,
-		"--max-sitemaps": true, "--filter": true, "-o": true, "-f": true,
-		"--retries": true, "--ui": true, "--color": true, "--user-agent": true,
-		"--url": true, "--urls": true,
-	}
-	flags := make([]string, 0, len(args))
-	positionals := make([]string, 0, 1)
-	for i := 0; i < len(args); i++ {
-		arg := args[i]
-		if arg == "--" {
-			positionals = append(positionals, args[i+1:]...)
+// parseInterspersed accepts the positional sitemap argument before or after
+// flags, using the flag package's own value-consumption rules. It parses args
+// against fs repeatedly: each Parse call stops at the first non-flag token,
+// which is collected as a positional, until nothing remains. Unknown flags
+// and invalid values keep the FlagSet's own strict behavior, and the "--"
+// terminator is honored by the flag package itself.
+func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
+	var positionals []string
+	for len(args) > 0 {
+		if err := fs.Parse(args); err != nil {
+			return nil, err
+		}
+		args = fs.Args()
+		if len(args) == 0 {
 			break
 		}
-		if !strings.HasPrefix(arg, "-") || arg == "-" {
-			positionals = append(positionals, arg)
-			continue
-		}
-		flags = append(flags, arg)
-		name := arg
-		if equals := strings.IndexByte(name, '='); equals >= 0 {
-			name = name[:equals]
-		}
-		if valueFlags[name] && !strings.Contains(arg, "=") && i+1 < len(args) {
-			i++
-			flags = append(flags, args[i])
-		}
+		positionals = append(positionals, args[0])
+		args = args[1:]
 	}
-	return append(flags, positionals...)
+	return positionals, nil
 }

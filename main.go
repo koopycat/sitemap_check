@@ -77,14 +77,19 @@ func main() {
 	flag.BoolVar(&quiet, "quiet", false, "suppress live progress")
 	flag.Var(&explicitURLs, "url", "check URL (repeatable; may be used without a sitemap)")
 	flag.Usage = usage
-	os.Args = append([]string{os.Args[0]}, reorderArgs(os.Args[1:])...)
-	flag.Parse()
+	positionals, err := parseInterspersed(flag.CommandLine, os.Args[1:])
+	if err != nil {
+		// flag.CommandLine uses ExitOnError and normally exits itself; this
+		// branch is defensive in case the error handling mode ever changes.
+		fmt.Fprintf(os.Stderr, "error: %v\n", err)
+		os.Exit(2)
+	}
 
 	if *showVersion {
 		fmt.Println(version)
 		os.Exit(0)
 	}
-	if flag.NArg() > 1 || (flag.NArg() == 0 && len(explicitURLs) == 0 && *urlsFile == "") {
+	if len(positionals) > 1 || (len(positionals) == 0 && len(explicitURLs) == 0 && *urlsFile == "") {
 		usage()
 		os.Exit(2)
 	}
@@ -94,8 +99,8 @@ func main() {
 		os.Exit(2)
 	}
 	sitemapURL := ""
-	if flag.NArg() == 1 {
-		sitemapURL = normalizeListURL(flag.Arg(0))
+	if len(positionals) == 1 {
+		sitemapURL = normalizeListURL(positionals[0])
 	}
 	listURLs, err := loadListURLs(explicitURLs, *urlsFile, os.Stdin)
 	if err != nil {
