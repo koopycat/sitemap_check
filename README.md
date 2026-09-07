@@ -133,6 +133,6 @@ git tag -a v0.1.0 -m "v0.1.0"
 git push origin v0.1.0
 ```
 
-The release workflow runs the race-enabled test suite, builds Linux, macOS, and Windows archives for amd64 and arm64, injects the tag into `--version`, and publishes SHA-256 checksums with generated release notes. Stable releases then update `Formula/sitemap-check.rb` in [`koopycat/homebrew-tap`](https://github.com/koopycat/homebrew-tap). Tags with a prerelease suffix, such as `v0.2.0-rc.1`, create a GitHub prerelease and do not update Homebrew.
+The release workflow runs the race-enabled test suite, builds Linux and macOS archives for amd64 and arm64, injects the tag into `--version`, and publishes SHA-256 checksums with generated release notes. Stable releases then update `Formula/sitemap-check.rb` in [`koopycat/homebrew-tap`](https://github.com/koopycat/homebrew-tap). Tags with a prerelease suffix, such as `v0.2.0-rc.1`, create a GitHub prerelease and do not update Homebrew.
 
 Homebrew publishing uses a dedicated GitHub App installed on `koopycat/homebrew-tap`. Configure its App ID and private key as the `HOMEBREW_APP_ID` and `HOMEBREW_APP_PRIVATE_KEY` Actions repository secrets. The app needs **Contents: read and write** access to the tap; the workflow restricts each generated installation token to that repository and permission.

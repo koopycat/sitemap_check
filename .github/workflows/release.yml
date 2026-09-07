@@ -58,7 +58,6 @@ jobs:
         goos:
           - linux
           - darwin
-          - windows
         goarch:
           - amd64
           - arm64
@@ -84,9 +83,6 @@ jobs:
           archive="${BINARY_NAME}_${version}_${GOOS}_${GOARCH}"
           package_dir="dist/${archive}"
           binary="$BINARY_NAME"
-          if [[ "$GOOS" == "windows" ]]; then
-            binary="${binary}.exe"
-          fi
 
           mkdir -p "$package_dir"
           CGO_ENABLED=0 go build \
@@ -104,19 +100,13 @@ jobs:
             fi
           fi
 
-          if [[ "$GOOS" == "windows" ]]; then
-            (cd dist && zip -q -r "${archive}.zip" "$archive")
-          else
-            tar -C dist -czf "dist/${archive}.tar.gz" "$archive"
-          fi
+          tar -C dist -czf "dist/${archive}.tar.gz" "$archive"
 
       - name: Upload release archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: release-${{ matrix.goos }}-${{ matrix.goarch }}
-          path: |
-            dist/*.tar.gz
-            dist/*.zip
+          path: dist/*.tar.gz
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
