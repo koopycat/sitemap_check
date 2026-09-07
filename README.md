@@ -22,16 +22,16 @@ It can also check explicit URL lists supplied on the command line or through a f
 sitemap_check [flags] [<sitemap-url>]
 
 Flags:
-  -c int                number of parallel requests (default 20)
-  --timeout duration    per-request timeout (default 10s)
-  --rate-limit float    max requests per second per host (default 10)
+  -c int                number of parallel requests (default 4)
+  --timeout duration    per-request timeout (default 15s)
+  --rate-limit float    max requests per second per host (default 2)
   --max-urls int        stop after N URLs (0 = no limit)
   --max-sitemaps int    stop after N nested sitemap files (0 = no limit)
   --filter string       regex: only check matching URLs
   -o string             output format: table|json|csv (default "table")
   -f string             write report to file instead of stdout
   -v                    list every URL, not just failures
-  --retries int         retries per URL on network errors and 5xx (default 1)
+  --retries int         retries per URL on network errors, 429, and 5xx (default 1)
   --fail-on-redirects   treat redirected sitemap URLs as failures (exit code 1)
   --ui string           live UI: auto|dashboard|plain|off (default "auto")
   --color string        color output: auto|always|never (default "auto")
@@ -45,9 +45,9 @@ Flags:
 ## Examples
 
 ```bash
-# full check of the WAGO Poland sitemap (index -> cms + commerce sitemaps)
+# full check of a sitemap using the polite defaults
 # Sitemap URLs are checked before any explicit list URLs.
-sitemap_check https://www.wago.com/pl/sitemap.xml
+sitemap_check https://example.com/sitemap.xml
 
 # check an explicit URL list without a sitemap (--url is repeatable)
 sitemap_check --url https://example.com/a --url example.com/b
@@ -64,9 +64,8 @@ sitemap_check https://example.com/sitemap.xml --url https://example.com/extra
 # quick smoke test of the first 50 URLs, JSON report to file
 sitemap_check --max-urls 50 -o json -f report.json https://www.wago.com/pl/sitemap.xml
 
-# only product pages, polite rate (some servers answer 503 under load -
-# lower --rate-limit if you see many 5xx responses)
-sitemap_check --filter '/p/' --rate-limit 5 https://www.wago.com/pl/sitemap.xml
+# only product pages; increase the rate explicitly for a site you control
+sitemap_check --filter '/p/' -c 20 --rate-limit 10 https://example.com/sitemap.xml
 
 # keep stdout machine-readable while progress continues on stderr
 sitemap_check --ui plain -o json https://example.com/sitemap.xml | jq .summary
@@ -87,6 +86,8 @@ List lines are trimmed, blank lines and lines beginning with `#` are ignored, an
 When both sources are provided, sitemap URLs are checked before explicit list URLs.
 All list URLs use the same checking, filtering, limiting, retry, rate-limiting, redirect, reporting, and exit-code behavior as sitemap URLs.
 
+Defaults are deliberately polite for scanning production sites: four URL workers, at most two requests per second per host, two concurrent sitemap fetches, and a 15-second request timeout. Retries use exponential backoff with jitter and honor `Retry-After` on `429` and `503` responses. Increase concurrency and rate limits explicitly only when the target can safely handle the traffic.
+
 `--ui auto` opens the full-screen dashboard when both stdin and stderr are terminals. It falls back to durable, ANSI-free status lines for pipes, CI, `TERM=dumb`, and other non-interactive environments. Use `--ui dashboard`, `--ui plain`, or `--ui off` to choose explicitly; `-q` and `--quiet` are aliases for `--ui off`.
 
 The dashboard starts with indeterminate sitemap discovery, then shows real completion percentage and ETA once the final URL count is known. It adapts from a full results view to a compact health view as the terminal shrinks.
@@ -100,6 +101,16 @@ Dashboard controls:
 - `q` or `Ctrl-C` requests a graceful cancellation and preserves a partial report; press again to close the dashboard while cancellation finishes
 
 Color follows terminal capabilities by default and respects `NO_COLOR`. Override it with `--color always` or `--color never`.
+
+## Installation
+
+Install the latest stable macOS release from the Homebrew tap:
+
+```bash
+brew install koopycat/tap/sitemap-check
+```
+
+Upgrade it later with `brew upgrade sitemap-check`. Stable release tags automatically update the formula after the GitHub release is published; prereleases do not.
 
 ## Development
 
@@ -122,4 +133,6 @@ git tag -a v0.1.0 -m "v0.1.0"
 git push origin v0.1.0
 ```
 
-The release workflow runs the race-enabled test suite, builds Linux, macOS, and Windows archives for amd64 and arm64, injects the tag into `--version`, and publishes SHA-256 checksums with generated release notes. Tags with a prerelease suffix, such as `v0.2.0-rc.1`, create a GitHub prerelease.
+The release workflow runs the race-enabled test suite, builds Linux, macOS, and Windows archives for amd64 and arm64, injects the tag into `--version`, and publishes SHA-256 checksums with generated release notes. Stable releases then update `Formula/sitemap-check.rb` in [`koopycat/homebrew-tap`](https://github.com/koopycat/homebrew-tap). Tags with a prerelease suffix, such as `v0.2.0-rc.1`, create a GitHub prerelease and do not update Homebrew.
+
+Homebrew publishing uses a dedicated GitHub App installed on `koopycat/homebrew-tap`. Configure its App ID and private key as the `HOMEBREW_APP_ID` and `HOMEBREW_APP_PRIVATE_KEY` Actions repository secrets. The app needs **Contents: read and write** access to the tap; the workflow restricts each generated installation token to that repository and permission.

@@ -44,7 +44,7 @@ Exit codes:
   130 scan cancelled by the user
 
 Examples:
-  sitemap_check -c 30 --rate-limit 5 https://www.wago.com/pl/sitemap.xml
+  sitemap_check https://example.com/sitemap.xml
   sitemap_check --url https://example.com/a --url example.com/b
   sitemap_check --urls /tmp/urls.txt
   sitemap_check --urls - < /tmp/urls.txt
@@ -54,16 +54,16 @@ Examples:
 
 func main() {
 	var (
-		concurrency  = flag.Int("c", 20, "number of parallel requests")
-		timeout      = flag.Duration("timeout", 10*time.Second, "per-request timeout")
-		rateLimit    = flag.Float64("rate-limit", 10, "max requests per second per host")
+		concurrency  = flag.Int("c", 4, "number of parallel requests")
+		timeout      = flag.Duration("timeout", 15*time.Second, "per-request timeout")
+		rateLimit    = flag.Float64("rate-limit", 2, "max requests per second per host")
 		maxURLs      = flag.Int("max-urls", 0, "stop after N URLs (0 = no limit)")
 		maxSitemaps  = flag.Int("max-sitemaps", 0, "stop after N nested sitemap files (0 = no limit)")
 		filter       = flag.String("filter", "", "regex: only check matching URLs")
 		output       = flag.String("o", "table", "output format: table|json|csv")
 		outFile      = flag.String("f", "", "write report to file instead of stdout")
 		verbose      = flag.Bool("v", false, "list every URL, not just failures")
-		retries      = flag.Int("retries", 1, "retries per URL on network errors and 5xx")
+		retries      = flag.Int("retries", 1, "retries per URL on network errors, 429, and 5xx")
 		failOnRedir  = flag.Bool("fail-on-redirects", false, "treat redirected sitemap URLs as failures (exit code 1)")
 		uiStyle      = flag.String("ui", "auto", "live UI: auto|dashboard|plain|off")
 		colorStyle   = flag.String("color", "auto", "color output: auto|always|never")
@@ -193,7 +193,7 @@ func main() {
 	fetchDone := make(chan fetchOutcome, 1)
 	if sitemapURL != "" {
 		go func() {
-			stats, _, fetchErr := fetchSitemapURLsObserved(fetchCtx, fetchClient, sitemapURL, *maxSitemaps, 8, sitemapURLs, monitor)
+			stats, _, fetchErr := fetchSitemapURLsObserved(fetchCtx, fetchClient, sitemapURL, *maxSitemaps, 2, sitemapURLs, monitor)
 			fetchDone <- fetchOutcome{stats: stats, err: fetchErr}
 		}()
 	} else {
@@ -223,12 +223,13 @@ func main() {
 		Proxy: http.ProxyFromEnvironment,
 	}
 	cfg := checkerConfig{
-		concurrency: *concurrency,
-		timeout:     *timeout,
-		ratePerHost: *rateLimit,
-		maxURLs:     *maxURLs,
-		filter:      filterRe,
-		retries:     *retries,
+		concurrency:    *concurrency,
+		timeout:        *timeout,
+		ratePerHost:    *rateLimit,
+		maxURLs:        *maxURLs,
+		filter:         filterRe,
+		retries:        *retries,
+		retryBaseDelay: 2 * time.Second,
 		onMaxURLs: func() {
 			maxReached.Store(true)
 			cancelFetch()

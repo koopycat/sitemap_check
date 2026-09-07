@@ -421,6 +421,42 @@ func TestRetryOn5xx(t *testing.T) {
 	}
 }
 
+func TestRetryTiming(t *testing.T) {
+	t.Run("exponential jitter", func(t *testing.T) {
+		for retry, minimum := range []time.Duration{2 * time.Second, 4 * time.Second, 8 * time.Second} {
+			got := retryDelay(retry+1, 2*time.Second, 0)
+			if got < minimum || got > minimum+minimum/4 {
+				t.Fatalf("retry %d delay = %s, want %s..%s", retry+1, got, minimum, minimum+minimum/4)
+			}
+		}
+	})
+
+	t.Run("Retry-After takes precedence", func(t *testing.T) {
+		if got := retryDelay(1, 2*time.Second, 10*time.Second); got != 10*time.Second {
+			t.Fatalf("delay = %s, want 10s", got)
+		}
+	})
+}
+
+func TestParseRetryAfter(t *testing.T) {
+	now := time.Date(2026, time.January, 2, 15, 4, 5, 0, time.UTC)
+	cases := []struct {
+		value string
+		want  time.Duration
+	}{
+		{"120", 120 * time.Second},
+		{now.Add(30 * time.Second).Format(http.TimeFormat), 30 * time.Second},
+		{"invalid", 0},
+		{"-1", 0},
+		{now.Add(-time.Second).Format(http.TimeFormat), 0},
+	}
+	for _, tc := range cases {
+		if got := parseRetryAfter(tc.value, now); got != tc.want {
+			t.Errorf("parseRetryAfter(%q) = %s, want %s", tc.value, got, tc.want)
+		}
+	}
+}
+
 func TestNoRetryOn4xx(t *testing.T) {
 	var mu sync.Mutex
 	calls := 0

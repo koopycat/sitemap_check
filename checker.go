@@ -2,12 +2,16 @@ package main
 
 import (
 	"context"
+	cryptorand "crypto/rand"
 	"io"
 	"math"
+	"math/big"
 	"net/http"
 	"net/url"
 	"regexp"
 	"slices"
+	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -23,6 +27,7 @@ type Result struct {
 	ContentType string        `json:"content_type,omitempty"`
 	Duration    time.Duration `json:"duration_ns"`
 	Err         string        `json:"error,omitempty"`
+	retryAfter  time.Duration
 }
 
 // Class returns a short classification of the result.
@@ -78,15 +83,16 @@ func (h *hostLimiters) wait(ctx context.Context, rawURL string) error {
 
 // checkerConfig configures the URL checker.
 type checkerConfig struct {
-	concurrency int
-	timeout     time.Duration
-	ratePerHost float64
-	maxURLs     int
-	filter      *regexp.Regexp
-	retries     int
-	transport   *http.Transport // shared across all checks (connection reuse)
-	client      *http.Client    // optional shared client; built per check when nil
-	onMaxURLs   func()
+	concurrency    int
+	timeout        time.Duration
+	ratePerHost    float64
+	maxURLs        int
+	filter         *regexp.Regexp
+	retries        int
+	retryBaseDelay time.Duration
+	transport      *http.Transport // shared across all checks (connection reuse)
+	client         *http.Client    // optional shared client; built per check when nil
+	onMaxURLs      func()
 }
 
 // runChecks consumes URLs from in, checks them concurrently, and streams
@@ -190,10 +196,12 @@ func checkURLObserved(ctx context.Context, rawURL string, cfg checkerConfig, lim
 				kind: eventCheckRetrying, url: rawURL,
 				attempt: attempt + 1, maxAttempts: attempts, err: reason,
 			})
-			backoff := time.Duration(attempt) * 500 * time.Millisecond
+			delay := retryDelay(attempt, cfg.retryBaseDelay, res.retryAfter)
+			timer := time.NewTimer(delay)
 			select {
-			case <-time.After(backoff):
+			case <-timer.C:
 			case <-ctx.Done():
+				timer.Stop()
 				res.Err = ctx.Err().Error()
 				return res
 			}
@@ -215,8 +223,8 @@ func checkURLObserved(ctx context.Context, rawURL string, cfg checkerConfig, lim
 			res.Attempts = attempt + 1
 		}
 
-		// Retry only network errors and 5xx.
-		if res.Err == "" && res.Status < 500 {
+		// Retry network errors, overload responses, and server errors.
+		if res.Err == "" && res.Status != http.StatusTooManyRequests && res.Status < 500 {
 			break
 		}
 	}
@@ -264,6 +272,7 @@ func doCheck(ctx context.Context, rawURL string, cfg checkerConfig, method strin
 
 	res.Status = resp.StatusCode
 	res.ContentType = resp.Header.Get("Content-Type")
+	res.retryAfter = parseRetryAfter(resp.Header.Get("Retry-After"), time.Now())
 	if res.Status >= 300 && res.Status < 400 {
 		loc := resp.Header.Get("Location")
 		if loc != "" && resp.Request != nil && resp.Request.URL != nil {
@@ -275,6 +284,45 @@ func doCheck(ctx context.Context, rawURL string, cfg checkerConfig, method strin
 		res.Location = loc
 	}
 	return res
+}
+
+func retryDelay(retry int, base, retryAfter time.Duration) time.Duration {
+	if base <= 0 {
+		base = 500 * time.Millisecond
+	}
+	// retry starts at 1. Cap the shift so an unusually large --retries value
+	// cannot overflow time.Duration.
+	shift := min(retry-1, 20)
+	delay := base * time.Duration(1<<shift)
+	jitterRange := delay / 4
+	if jitterRange > 0 {
+		jitter, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(jitterRange)+1))
+		if err == nil {
+			delay += time.Duration(jitter.Int64())
+		}
+	}
+	if retryAfter > delay {
+		return retryAfter
+	}
+	return delay
+}
+
+func parseRetryAfter(value string, now time.Time) time.Duration {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds >= 0 && seconds <= math.MaxInt64/int64(time.Second) {
+			return time.Duration(seconds) * time.Second
+		}
+		return 0
+	}
+	when, err := http.ParseTime(value)
+	if err != nil || !when.After(now) {
+		return 0
+	}
+	return when.Sub(now)
 }
 
 // summary aggregates all results.

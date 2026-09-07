@@ -88,8 +88,8 @@ func TestForwardURLSourcesCombinedOrdering(t *testing.T) {
 func newTestFlagSet() (*flag.FlagSet, *int, *time.Duration, *bool, *repeatableString) {
 	fs := flag.NewFlagSet("test", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
-	concurrency := fs.Int("c", 20, "")
-	timeout := fs.Duration("timeout", 10*time.Second, "")
+	concurrency := fs.Int("c", 4, "")
+	timeout := fs.Duration("timeout", 15*time.Second, "")
 	quiet := fs.Bool("quiet", false, "")
 	var urls repeatableString
 	fs.Var(&urls, "url", "")

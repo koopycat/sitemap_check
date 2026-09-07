@@ -165,3 +165,105 @@ jobs:
             --generate-notes \
             --title "${BINARY_NAME} ${GITHUB_REF_NAME}" \
             "${prerelease_args[@]}"
+
+  homebrew:
+    name: Update Homebrew formula
+    needs: release
+    if: ${{ !contains(github.ref_name, '-') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Create Homebrew tap token
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349  # v2.2.2
+        with:
+          app-id: ${{ secrets.HOMEBREW_APP_ID }}
+          private-key: ${{ secrets.HOMEBREW_APP_PRIVATE_KEY }}
+          owner: ${{ github.repository_owner }}
+          repositories: homebrew-tap
+          permission-contents: write
+
+      - name: Download release archives
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+
+      - name: Check out Homebrew tap
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
+        with:
+          repository: koopycat/homebrew-tap
+          token: ${{ steps.app-token.outputs.token }}
+          path: homebrew-tap
+
+      - name: Generate formula
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          version="${GITHUB_REF_NAME#v}"
+          darwin_arm64_sha="$(sha256sum "dist/${BINARY_NAME}_${version}_darwin_arm64.tar.gz" | awk '{print $1}')"
+          darwin_amd64_sha="$(sha256sum "dist/${BINARY_NAME}_${version}_darwin_amd64.tar.gz" | awk '{print $1}')"
+          linux_arm64_sha="$(sha256sum "dist/${BINARY_NAME}_${version}_linux_arm64.tar.gz" | awk '{print $1}')"
+          linux_amd64_sha="$(sha256sum "dist/${BINARY_NAME}_${version}_linux_amd64.tar.gz" | awk '{print $1}')"
+
+          mkdir -p homebrew-tap/Formula
+          cat > homebrew-tap/Formula/sitemap-check.rb <<EOF
+          class SitemapCheck < Formula
+            desc "Check every URL contained in an XML sitemap"
+            homepage "https://github.com/koopycat/sitemap_check"
+            version "${version}"
+
+            on_macos do
+              on_arm do
+                url "https://github.com/koopycat/sitemap_check/releases/download/v#{version}/sitemap_check_#{version}_darwin_arm64.tar.gz"
+                sha256 "${darwin_arm64_sha}"
+              end
+
+              on_intel do
+                url "https://github.com/koopycat/sitemap_check/releases/download/v#{version}/sitemap_check_#{version}_darwin_amd64.tar.gz"
+                sha256 "${darwin_amd64_sha}"
+              end
+            end
+
+            on_linux do
+              on_arm do
+                url "https://github.com/koopycat/sitemap_check/releases/download/v#{version}/sitemap_check_#{version}_linux_arm64.tar.gz"
+                sha256 "${linux_arm64_sha}"
+              end
+
+              on_intel do
+                url "https://github.com/koopycat/sitemap_check/releases/download/v#{version}/sitemap_check_#{version}_linux_amd64.tar.gz"
+                sha256 "${linux_amd64_sha}"
+              end
+            end
+
+            def install
+              bin.install "sitemap_check"
+            end
+
+            test do
+              assert_equal version.to_s, shell_output("#{bin}/sitemap_check --version").strip
+            end
+          end
+          EOF
+
+          ruby -c homebrew-tap/Formula/sitemap-check.rb
+
+      - name: Commit and push formula
+        working-directory: homebrew-tap
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if [[ -z "$(git status --porcelain -- Formula/sitemap-check.rb)" ]]; then
+            echo "Formula is already current."
+            exit 0
+          fi
+
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -- Formula/sitemap-check.rb
+          git commit -m "Update sitemap-check to ${GITHUB_REF_NAME}"
+          git push
