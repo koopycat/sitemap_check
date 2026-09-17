@@ -1,0 +1,76 @@
+schema: spec-driven
+
+context: |
+  Product purpose:
+  `sitemap_check` helps site owners, operators, and CI/release pipelines verify
+  that URLs intentionally published through XML sitemaps or explicit URL lists
+  are directly reachable. It surfaces broken or unavailable URLs and unexpected
+  redirects before they become a persistent problem for users or search-engine
+  crawlers, while scanning production sites conservatively and producing
+  actionable human- and machine-readable reports.
+
+  Product boundaries and domain semantics:
+  - This is a focused URL availability and sitemap-health checker, not a general
+    web crawler, browser-based synthetic monitor, content validator, or complete
+    SEO audit suite.
+  - A sitemap is a discovery source; a listed URL is the resource whose direct
+    HTTP outcome is checked. Sitemap-fetch/parse failures are operational errors,
+    while unhealthy listed URLs are scan findings.
+  - Redirects are intentionally not followed. A sitemap should normally publish
+    final canonical URLs, so redirects are visible findings, but they fail a scan
+    only when the caller opts into that policy.
+  - The final report and exit code are the stable automation contract. The live
+    dashboard/plain progress is an optional presentation layer and must never
+    corrupt machine-readable output.
+
+  Durable constraints:
+  - Be polite to production sites: keep concurrency, retries, timeouts, and
+    per-host request rates explicit and bounded; cancellation must stop work
+    promptly.
+  - Preserve results already collected by the reporting pipeline and emit a
+    useful partial report on graceful cancellation.
+  - Keep stdout for final reports and stderr for progress, notices, and errors.
+  - Treat documented flags, JSON/CSV fields, result classification, and exit codes
+    as public compatibility surfaces. Intentional breaks must be explicit.
+  - Keep discovery, checking, monitoring, and UI code race-safe. Producers own
+    channel closure, blocking work is context-aware, and terminal I/O stays out
+    of scan workers.
+
+  Technical context:
+  - Go 1.26 command in package main; standard flag/net/http/XML facilities plus
+    Bubble Tea/Lip Gloss for the terminal UI and x/time/rate for host limiting.
+  - The pipeline streams sitemap discovery into concurrent checks and semantic
+    scan events into presentation code; do not require the complete URL set in
+    memory before checking starts.
+  - Tests use Go's testing package and httptest. Tests must be deterministic and
+    must not depend on the public network.
+  - Development uses devenv. Canonical checks are:
+    `devenv shell -- go build ./...`, `devenv shell -- go test -race ./...`, and
+    `devenv shell -- golangci-lint run ./...`.
+
+rules:
+  proposal:
+    - Lead with the user or operator problem and explain how the change supports the focused availability-checking purpose.
+    - State explicit non-goals when the request could expand into crawling, content validation, monitoring, or broad SEO analysis.
+    - Call out compatibility impact to flags, report schemas, classifications, and exit codes.
+  specs:
+    - Specify externally observable behavior and use the project's sitemap, listed-URL, finding, and operational-error terminology consistently.
+    - Cover human and machine-readable behavior, failure, limits, and cancellation when relevant.
+    - Use RFC 2119 keywords and Given/When/Then scenarios.
+  design:
+    - Prefer the simplest standard-library-first design; add dependencies only with a clear benefit.
+    - Explain request bounds, concurrency ownership, cancellation propagation, channel lifecycle, and partial-result behavior when relevant.
+    - Explain stdout/stderr, report-schema, and exit-code implications for CLI changes.
+  tasks:
+    - Include focused httptest-based coverage for changed network behavior and end-to-end CLI coverage for changed public behavior.
+    - End Go changes with build, race-test, and lint verification using the canonical commands.
+
+operations:
+  apply:
+    guidance:
+      - For bug fixes, first reproduce the user-visible failure with the closest practical end-to-end test.
+      - Run focused tests while iterating, then the canonical build, race-test, and lint commands.
+  archive:
+    guidance:
+      - Keep the main specification focused on durable observable behavior rather than implementation details.
+      - Confirm any intentional compatibility change is reflected in the specification and user documentation.
