@@ -10,24 +10,24 @@ import (
 func TestDeriveVersion(t *testing.T) {
 	tests := []struct {
 		name     string
-		injected string
+		release  bool
 		embedded string
 		info     *debug.BuildInfo
 		want     string
 	}{
 		{
-			name:     "injected release version wins",
-			injected: "9.9.9",
+			name:     "release build reports the tracked version",
+			release:  true,
 			embedded: "0.3.0",
 			info:     buildInfoWithVCS("abcdef1234567890", false),
-			want:     "9.9.9",
+			want:     "0.3.0",
 		},
 		{
-			name:     "injected release version is trimmed",
-			injected: "  9.9.9\n",
-			embedded: "0.3.0",
-			info:     buildInfoWithVCS("abcdef1234567890", false),
-			want:     "9.9.9",
+			name:     "release build trims the tracked version",
+			release:  true,
+			embedded: "  0.3.0\n",
+			info:     buildInfoWithVCS("abcdef1234567890", true),
+			want:     "0.3.0",
 		},
 		{
 			name:     "development build uses the tracked base version",
@@ -72,17 +72,17 @@ func TestDeriveVersion(t *testing.T) {
 			want:     "dev",
 		},
 		{
-			name:     "whitespace-only injected version is ignored",
-			injected: "   ",
-			embedded: "0.3.0",
+			name:     "release build with an empty tracked version falls back to dev",
+			release:  true,
+			embedded: "   ",
 			info:     nil,
-			want:     "0.3.0+dev",
+			want:     "dev",
 		},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if got := deriveVersion(test.injected, test.embedded, test.info); got != test.want {
-				t.Fatalf("deriveVersion(%q, %q, %#v) = %q, want %q", test.injected, test.embedded, test.info, got, test.want)
+			if got := deriveVersion(test.release, test.embedded, test.info); got != test.want {
+				t.Fatalf("deriveVersion(%t, %q, %#v) = %q, want %q", test.release, test.embedded, test.info, got, test.want)
 			}
 		})
 	}

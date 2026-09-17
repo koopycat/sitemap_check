@@ -20,11 +20,6 @@ import (
 	"time"
 )
 
-// version is the release version injected at build time with
-// -ldflags="-X main.version=...". It is empty for development builds, which
-// then report a development identifier instead of a released version.
-var version = ""
-
 // userAgent is the default User-Agent header; --user-agent overrides it.
 var userAgent string
 

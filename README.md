@@ -118,6 +118,7 @@ Dev environment via [devenv](https://devenv.sh) (`devenv shell` provides Go + go
 
 ```bash
 go build ./...
+go build -tags release .   # reproduce a release-style --version report
 go test -race ./...
 golangci-lint run ./...
 ```
@@ -126,7 +127,7 @@ Linting uses [golangci-lint](https://golangci-lint.run) (config in `.golangci.ym
 
 ## Version reporting
 
-`VERSION` at the repository root records the base version and is embedded into the binary. A plain `go build` reports that base version with an explicit development marker, such as `0.3.0+dev.e8d33fe`, with `.dirty` appended when the working tree has uncommitted changes. The release workflow injects the tag with `-ldflags="-X main.version=..."`, so a released binary reports exactly its version, such as `0.3.0`.
+`VERSION` at the repository root records the base version and is the single source of the reported version, embedded into the binary at build time. A plain `go build` reports that base version with an explicit development marker, such as `0.3.0+dev.e8d33fe`, with `.dirty` appended when the working tree has uncommitted changes. The release workflow builds with the `release` tag (`go build -tags release .`), which makes the binary report the tracked version verbatim, such as `0.3.0`.
 
 ## Releasing
 
@@ -143,6 +144,6 @@ git tag -a v0.4.0 -m "v0.4.0"
 git push origin v0.4.0
 ```
 
-The release workflow refuses a tag that does not match `VERSION`, runs the race-enabled test suite, builds Linux and macOS archives for amd64 and arm64, injects the tag into `--version`, and publishes SHA-256 checksums with generated release notes. Re-running the workflow for an already-tagged version converges that release to a published state instead of leaving a draft. Stable releases then update `Formula/sitemap-check.rb` in [`koopycat/homebrew-tap`](https://github.com/koopycat/homebrew-tap). Tags with a prerelease suffix, such as `v0.4.0-rc.1`, create a GitHub prerelease and do not update Homebrew.
+The release workflow refuses a tag that does not match `VERSION`, runs the race-enabled test suite, builds Linux and macOS archives for amd64 and arm64 with the `release` tag so `--version` reports the tracked version, and publishes SHA-256 checksums with generated release notes. Re-running the workflow for an already-tagged version converges that release to a published state instead of leaving a draft. Stable releases then update `Formula/sitemap-check.rb` in [`koopycat/homebrew-tap`](https://github.com/koopycat/homebrew-tap). Tags with a prerelease suffix, such as `v0.4.0-rc.1`, create a GitHub prerelease and do not update Homebrew.
 
 Homebrew publishing uses a dedicated GitHub App installed on `koopycat/homebrew-tap`. Configure its App ID and private key as the `HOMEBREW_APP_ID` and `HOMEBREW_APP_PRIVATE_KEY` Actions repository secrets. The app needs **Contents: read and write** access to the tap; the workflow restricts each generated installation token to that repository and permission.

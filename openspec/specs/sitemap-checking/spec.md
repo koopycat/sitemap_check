@@ -365,9 +365,9 @@ The command SHALL expose the build version without requiring a scan source. A re
 
 #### Scenario: Release build version
 
-- **GIVEN** a build whose version was injected from a release tag
+- **GIVEN** a build produced by the release process
 - **WHEN** the command prints its version
-- **THEN** it SHALL print that injected version
+- **THEN** it SHALL print the semantic version of the release it was built from
 
 #### Scenario: Development build version
 

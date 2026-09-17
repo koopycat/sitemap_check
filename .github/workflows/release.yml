@@ -98,11 +98,14 @@ jobs:
           mkdir -p "$package_dir"
           CGO_ENABLED=0 go build \
             -trimpath \
-            -ldflags="-s -w -X main.version=${version}" \
+            -tags release \
+            -ldflags="-s -w" \
             -o "${package_dir}/${binary}" \
             .
           cp README.md "$package_dir/"
 
+          # A release build derives its version from the embedded VERSION file, so
+          # this assertion verifies that the tracked version matches the pushed tag.
           if [[ "$GOOS" == "linux" && "$GOARCH" == "amd64" ]]; then
             actual_version="$("${package_dir}/${binary}" --version)"
             if [[ "$actual_version" != "$version" ]]; then

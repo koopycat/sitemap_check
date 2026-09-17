@@ -243,9 +243,9 @@ func TestCLIBlackBoxSmokeAndExitCodes(t *testing.T) {
 		if lines := strings.Split(versionOutput, "\n"); len(lines) != 1 {
 			t.Fatalf("version stdout = %q, want a single line", result.stdout)
 		}
-		// The test build injects no release version, so the command must report the
-		// tracked base version with a development marker rather than a released
-		// version.
+		// The test build does not set the release tag, so the command must report
+		// the tracked base version with a development marker rather than a
+		// released version.
 		if want := strings.TrimSpace(embeddedVersion) + devMarker; !strings.HasPrefix(versionOutput, want) {
 			t.Fatalf("version stdout = %q, want a %s development build", versionOutput, want)
 		}

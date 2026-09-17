@@ -8,7 +8,8 @@ import (
 )
 
 // embeddedVersion is the base version tracked in VERSION. It is the single
-// source of truth for the version recorded by the source tree.
+// source of truth for the reported version: the release build reports it
+// verbatim, and every other build reports it with a development marker.
 //
 //go:embed VERSION
 var embeddedVersion string
@@ -23,17 +24,17 @@ const devVersion = "dev"
 // a development version identifier.
 const revisionLength = 7
 
-// deriveVersion returns the version string to report. A release version injected
-// at build time always wins; otherwise the tracked base version is reported with
-// an explicit development marker, so a development build never impersonates a
-// released version.
-func deriveVersion(injected, embedded string, info *debug.BuildInfo) string {
-	if v := strings.TrimSpace(injected); v != "" {
-		return v
-	}
+// deriveVersion returns the version string to report. A release build reports
+// the tracked base version verbatim; any other build reports that base version
+// with an explicit development marker, so a development build never
+// impersonates a released version.
+func deriveVersion(release bool, embedded string, info *debug.BuildInfo) string {
 	base := strings.TrimSpace(embedded)
 	if base == "" {
 		return devVersion
+	}
+	if release {
+		return base
 	}
 	v := base + devMarker
 	revision, dirty := vcsRevision(info)
@@ -72,7 +73,7 @@ func vcsRevision(info *debug.BuildInfo) (string, bool) {
 // that usage, --version, and the default User-Agent always agree.
 var buildVersion = sync.OnceValue(func() string {
 	info, _ := debug.ReadBuildInfo()
-	return deriveVersion(version, embeddedVersion, info)
+	return deriveVersion(releaseBuild, embeddedVersion, info)
 })
 
 // init seeds the default User-Agent from the reported version. It runs after
