@@ -124,15 +124,25 @@ golangci-lint run ./...
 
 Linting uses [golangci-lint](https://golangci-lint.run) (config in `.golangci.yml`): errcheck, govet, staticcheck, gosec, revive, gocritic, errorlint, bodyclose, noctx and more, plus gofmt/goimports formatting (`golangci-lint fmt`).
 
+## Version reporting
+
+`VERSION` at the repository root records the base version and is embedded into the binary. A plain `go build` reports that base version with an explicit development marker, such as `0.3.0+dev.e8d33fe`, with `.dirty` appended when the working tree has uncommitted changes. The release workflow injects the tag with `-ldflags="-X main.version=..."`, so a released binary reports exactly its version, such as `0.3.0`.
+
 ## Releasing
 
-Push a semantic-version tag to build and publish a GitHub release:
+A release records its version in the repository first, then tags that commit:
 
 ```bash
-git tag -a v0.1.0 -m "v0.1.0"
-git push origin v0.1.0
+# 1. Set VERSION to the release version and commit it on main
+echo 0.4.0 > VERSION
+git commit -am "Release v0.4.0"
+git push origin main
+
+# 2. Tag the commit
+git tag -a v0.4.0 -m "v0.4.0"
+git push origin v0.4.0
 ```
 
-The release workflow runs the race-enabled test suite, builds Linux and macOS archives for amd64 and arm64, injects the tag into `--version`, and publishes SHA-256 checksums with generated release notes. Stable releases then update `Formula/sitemap-check.rb` in [`koopycat/homebrew-tap`](https://github.com/koopycat/homebrew-tap). Tags with a prerelease suffix, such as `v0.2.0-rc.1`, create a GitHub prerelease and do not update Homebrew.
+The release workflow refuses a tag that does not match `VERSION`, runs the race-enabled test suite, builds Linux and macOS archives for amd64 and arm64, injects the tag into `--version`, and publishes SHA-256 checksums with generated release notes. Re-running the workflow for an already-tagged version converges that release to a published state instead of leaving a draft. Stable releases then update `Formula/sitemap-check.rb` in [`koopycat/homebrew-tap`](https://github.com/koopycat/homebrew-tap). Tags with a prerelease suffix, such as `v0.4.0-rc.1`, create a GitHub prerelease and do not update Homebrew.
 
 Homebrew publishing uses a dedicated GitHub App installed on `koopycat/homebrew-tap`. Configure its App ID and private key as the `HOMEBREW_APP_ID` and `HOMEBREW_APP_PRIVATE_KEY` Actions repository secrets. The app needs **Contents: read and write** access to the tap; the workflow restricts each generated installation token to that repository and permission.

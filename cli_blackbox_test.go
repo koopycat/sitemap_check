@@ -236,8 +236,18 @@ func TestCLIBlackBoxSmokeAndExitCodes(t *testing.T) {
 	t.Run("version exits zero through built executable", func(t *testing.T) {
 		result := runCLI(t, cliRunOptions{}, "--version")
 		requireExitCode(t, result, 0)
-		if strings.TrimSpace(result.stdout) != version {
-			t.Fatalf("version stdout = %q, want %q", result.stdout, version)
+		versionOutput := strings.TrimSpace(result.stdout)
+		if versionOutput == "" {
+			t.Fatal("version stdout is empty")
+		}
+		if lines := strings.Split(versionOutput, "\n"); len(lines) != 1 {
+			t.Fatalf("version stdout = %q, want a single line", result.stdout)
+		}
+		// The test build injects no release version, so the command must report the
+		// tracked base version with a development marker rather than a released
+		// version.
+		if want := strings.TrimSpace(embeddedVersion) + devMarker; !strings.HasPrefix(versionOutput, want) {
+			t.Fatalf("version stdout = %q, want a %s development build", versionOutput, want)
 		}
 		if result.stderr != "" {
 			t.Fatalf("version stderr is not empty: %q", result.stderr)

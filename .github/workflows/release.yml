@@ -33,6 +33,17 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7.0.1
 
+      - name: Require tag to match tracked version
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          tracked="$(tr -d '[:space:]' < VERSION)"
+          if [[ "$GITHUB_REF_NAME" != "v${tracked}" ]]; then
+            echo "::error title=Tag does not match VERSION::tag ${GITHUB_REF_NAME} does not match v${tracked}; bump VERSION, commit it on main, then tag that commit"
+            exit 1
+          fi
+
       - name: Set up Go
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e  # v7.0.0
         with:
@@ -140,21 +151,56 @@ jobs:
         run: |
           set -euo pipefail
 
-          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
-            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
-            exit 0
-          fi
-
           prerelease_args=()
           if [[ "$GITHUB_REF_NAME" == *-* ]]; then
-            prerelease_args+=(--prerelease)
+            prerelease_args+=(--prerelease=true)
+          else
+            prerelease_args+=(--prerelease=false)
           fi
 
-          gh release create "$GITHUB_REF_NAME" dist/* \
-            --verify-tag \
-            --generate-notes \
-            --title "${BINARY_NAME} ${GITHUB_REF_NAME}" \
-            "${prerelease_args[@]}"
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            # An existing release, including a draft, is converged to the
+            # intended published state instead of being left as a draft.
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+            gh release edit "$GITHUB_REF_NAME" \
+              --title "${BINARY_NAME} ${GITHUB_REF_NAME}" \
+              --draft=false \
+              "${prerelease_args[@]}"
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --verify-tag \
+              --generate-notes \
+              --title "${BINARY_NAME} ${GITHUB_REF_NAME}" \
+              "${prerelease_args[@]}"
+          fi
+
+      - name: Verify release is published
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          expected_prerelease=false
+          if [[ "$GITHUB_REF_NAME" == *-* ]]; then
+            expected_prerelease=true
+          fi
+
+          state="$(gh release view "$GITHUB_REF_NAME" --json isDraft,isPrerelease --jq '"\(.isDraft) \(.isPrerelease)"')"
+          is_draft="${state%% *}"
+          is_prerelease="${state##* }"
+
+          if [[ "$is_draft" != "false" ]]; then
+            echo "::error title=Release is still a draft::${GITHUB_REF_NAME} was not published"
+            exit 1
+          fi
+          if [[ "$is_prerelease" != "$expected_prerelease" ]]; then
+            echo "::error title=Wrong release classification::expected prerelease=${expected_prerelease}, got ${is_prerelease}"
+            exit 1
+          fi
+
+          echo "${GITHUB_REF_NAME} is published (prerelease=${is_prerelease})"
 
   homebrew:
     name: Update Homebrew formula

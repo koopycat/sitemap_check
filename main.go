@@ -20,10 +20,13 @@ import (
 	"time"
 )
 
-// version is overridden by the release build using -ldflags.
-var version = "0.1.0"
+// version is the release version injected at build time with
+// -ldflags="-X main.version=...". It is empty for development builds, which
+// then report a development identifier instead of a released version.
+var version = ""
 
-var userAgent = "sitemap_check/" + version
+// userAgent is the default User-Agent header; --user-agent overrides it.
+var userAgent string
 
 func usage() {
 	fmt.Fprintf(os.Stderr, `sitemap_check %s - check all URLs contained in an XML sitemap
@@ -34,7 +37,7 @@ Usage:
 At least one sitemap URL, --url, or --urls source is required.
 
 Flags:
-`, version)
+`, buildVersion())
 	flag.PrintDefaults()
 	fmt.Fprintf(os.Stderr, `
 Exit codes:
@@ -86,7 +89,7 @@ func main() {
 	}
 
 	if *showVersion {
-		fmt.Println(version)
+		fmt.Println(buildVersion())
 		os.Exit(0)
 	}
 	if len(positionals) > 1 || (len(positionals) == 0 && len(explicitURLs) == 0 && *urlsFile == "") {
