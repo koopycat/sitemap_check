@@ -53,7 +53,7 @@ func TestLoadListURLsStdin(t *testing.T) {
 
 func TestForwardURLSourcesStandaloneList(t *testing.T) {
 	out := make(chan string, 2)
-	if !forwardURLSources(context.Background(), nil, []string{"standalone.example/a", "https://standalone.example/b"}, out, nil) {
+	if !forwardURLSources(context.Background(), nil, []string{"https://standalone.example/a", "https://standalone.example/b"}, out, nil) {
 		t.Fatal("forwardURLSources returned false")
 	}
 	close(out)
@@ -70,7 +70,7 @@ func TestForwardURLSourcesCombinedOrdering(t *testing.T) {
 	sitemap <- "https://sitemap.example/two"
 	close(sitemap)
 	out := make(chan string, 4)
-	list := []string{"list.example/one", "https://list.example/two"}
+	list := []string{"https://list.example/one", "https://list.example/two"}
 	if !forwardURLSources(context.Background(), sitemap, list, out, nil) {
 		t.Fatal("forwardURLSources returned false")
 	}
@@ -293,16 +293,46 @@ func TestLoadListURLsFileErrorAbortsAfterExplicit(t *testing.T) {
 	}
 }
 
-func TestEmitURLListNormalizesSchemeLessURLs(t *testing.T) {
-	out := make(chan string, 2)
-	if !emitURLList(context.Background(), out, []string{"example.test/path", "https://example.test/secure"}, nil) {
-		t.Fatal("emitURLList returned false")
+func TestNormalizeListURL(t *testing.T) {
+	valid := map[string]string{
+		"\texample.test/trimmed\n":   "https://example.test/trimmed",
+		"":                           "",
+		"example.test/path":          "https://example.test/path",
+		"example.test:8080/path":     "https://example.test:8080/path",
+		"http://example.test/a":      "http://example.test/a",
+		"HTTPS://Example.test/A?b=C": "https://Example.test/A?b=C",
+		"Http://example.test":        "http://example.test",
 	}
-	close(out)
-	got := collect(out)
-	want := []string{"https://example.test/path", "https://example.test/secure"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("emitURLList() = %#v, want %#v", got, want)
+	for raw, want := range valid {
+		got, err := normalizeListURL(raw)
+		if err != nil || got != want {
+			t.Errorf("normalizeListURL(%q) = %q, %v; want %q, nil", raw, got, err, want)
+		}
+	}
+	invalid := map[string]string{
+		"ftp://example.test/file": `unsupported scheme "ftp"`,
+		"FILE:///etc/passwd":      `unsupported scheme "file"`,
+		"https:///path":           "missing host",
+	}
+	for raw, want := range invalid {
+		got, err := normalizeListURL(raw)
+		if err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("normalizeListURL(%q) = %q, %v; want error containing %q", raw, got, err, want)
+		}
+	}
+}
+
+func TestReadURLListReportsInvalidLine(t *testing.T) {
+	_, err := readURLList(strings.NewReader("https://example.test/a\n\n# comment\nftp://example.test/b\n"))
+	if err == nil || !strings.Contains(err.Error(), "line 4") || !strings.Contains(err.Error(), `"ftp"`) {
+		t.Fatalf("readURLList() error = %v, want line 4 with the ftp scheme", err)
+	}
+}
+
+func TestLoadListURLsRejectsInvalidExplicitURL(t *testing.T) {
+	_, err := loadListURLs([]string{"https://example.test/a", "ftp://example.test/b"}, "", nil)
+	if err == nil || !strings.Contains(err.Error(), "--url") {
+		t.Fatalf("loadListURLs() error = %v, want an --url error", err)
 	}
 }
 

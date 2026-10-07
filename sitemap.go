@@ -79,7 +79,7 @@ func fetchSitemapURLsObserved(ctx context.Context, client *http.Client, root str
 	}
 
 	// stopCh is closed by the caller (via the returned stop func) to abort
-	// a blocked parse early, e.g. when --max-urls was reached.
+	// a blocked emission early, e.g. when --max-urls was reached.
 	stopCh := make(chan struct{})
 	var stopOnce sync.Once
 	requestStop := func() {
@@ -153,7 +153,7 @@ func fetchSitemapURLsObserved(ctx context.Context, client *http.Client, root str
 		stats.Files++
 		stats.URLs += n
 		mu.Unlock()
-		if kind == "index" {
+		if kind == sitemapKindIndex {
 			for _, l := range locs {
 				enqueue(l, it.depth+1)
 			}
@@ -224,28 +224,57 @@ func fetchSitemapURLsObserved(ctx context.Context, client *http.Client, root str
 	return stats, requestStop, firstErr
 }
 
-// fetchAndParseSitemapObserved downloads one sitemap document and parses it
-// incrementally. For a urlset, URLs are sent to out directly (n = number of
-// URLs emitted). For a sitemapindex, the nested sitemap locations are
-// returned in locs.
+// Sitemap document kinds, determined by the root element.
+const (
+	sitemapKindURLSet = "urlset"
+	sitemapKindIndex  = "index"
+)
+
+// fetchAndParseSitemapObserved downloads and parses one sitemap document. For
+// a urlset, the page URLs are sent to out (n = number of URLs emitted). For a
+// sitemapindex, the nested sitemap locations are returned in locs.
 //
-// It reports whether it was asked to stop via the stop channel; in that
-// case the parse aborts early without error.
+// The document is parsed completely before any page URL is emitted: the
+// rate-limited checker drains out far more slowly than a sitemap downloads,
+// and the fetch timeout must bound the download, not the checking.
+//
+// A stop request aborts the emission early without error.
 func fetchAndParseSitemapObserved(ctx context.Context, client *http.Client, loc string, stop <-chan struct{}, out chan<- string, observer scanObserver) (kind string, locs []string, n int, err error) {
+	kind, locs, err = fetchSitemapDocument(ctx, client, loc)
+	if err != nil || kind != sitemapKindURLSet {
+		return kind, locs, 0, err
+	}
+	for _, pageURL := range locs {
+		select {
+		case out <- pageURL:
+			n++
+			observeScanEvent(observer, scanEvent{kind: eventURLDiscovered, url: pageURL})
+		case <-stop:
+			return kind, nil, n, nil
+		case <-ctx.Done():
+			return "", nil, 0, ctx.Err()
+		}
+	}
+	return kind, nil, n, nil
+}
+
+// fetchSitemapDocument downloads one sitemap document and returns its kind
+// and its locations: page URLs for a urlset, child sitemaps for an index.
+func fetchSitemapDocument(ctx context.Context, client *http.Client, loc string) (kind string, locs []string, err error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, loc, nil)
 	if err != nil {
-		return "", nil, 0, err
+		return "", nil, err
 	}
 	req.Header.Set("User-Agent", userAgent)
 
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", nil, 0, err
+		return "", nil, err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return "", nil, 0, fmt.Errorf("unexpected status %s", resp.Status)
+		return "", nil, fmt.Errorf("unexpected status %s", resp.Status)
 	}
 
 	// The body can be gzip-compressed in two ways:
@@ -259,36 +288,50 @@ func fetchAndParseSitemapObserved(ctx context.Context, client *http.Client, loc 
 			strings.Contains(strings.ToLower(resp.Header.Get("Content-Type")), "gzip")) {
 		gz, gzErr := gzip.NewReader(resp.Body)
 		if gzErr != nil {
-			return "", nil, 0, fmt.Errorf("gzip reader: %w", gzErr)
+			return "", nil, fmt.Errorf("gzip reader: %w", gzErr)
 		}
 		defer gz.Close()
 		r = gz
 	}
 
-	dec := xml.NewDecoder(io.LimitReader(r, 1<<30))
 	base, _ := url.Parse(loc)
+	return parseSitemapDocument(io.LimitReader(r, 1<<30), base)
+}
 
+// parseSitemapDocument parses a urlset or sitemapindex document. Only a <loc>
+// that is a direct child of a <url> (urlset) or <sitemap> (index) entry in the
+// root element's namespace is a location; extension markup such as
+// <image:loc> is ignored. Relative locations are resolved against base.
+func parseSitemapDocument(r io.Reader, base *url.URL) (kind string, locs []string, err error) {
+	dec := xml.NewDecoder(r)
+	var open []xml.Name // currently open elements, root first
 	for {
 		tok, tokErr := dec.Token()
 		if errors.Is(tokErr, io.EOF) {
 			break
 		}
 		if tokErr != nil {
-			return "", nil, 0, fmt.Errorf("parsing XML: %w", tokErr)
+			return "", nil, fmt.Errorf("parsing XML: %w", tokErr)
 		}
-		start, ok := tok.(xml.StartElement)
-		if !ok {
-			continue
-		}
-		switch start.Name.Local {
-		case "urlset":
-			kind = "urlset"
-		case "sitemapindex":
-			kind = "index"
-		case "loc":
+		switch t := tok.(type) {
+		case xml.StartElement:
+			if len(open) == 0 {
+				switch t.Name.Local {
+				case "urlset":
+					kind = sitemapKindURLSet
+				case "sitemapindex":
+					kind = sitemapKindIndex
+				default:
+					return "", nil, fmt.Errorf("unsupported root element <%s>, want <urlset> or <sitemapindex>", t.Name.Local)
+				}
+			}
+			if !isEntryLoc(open, t.Name) {
+				open = append(open, t.Name)
+				continue
+			}
 			var text string
-			if decErr := dec.DecodeElement(&text, &start); decErr != nil {
-				return "", nil, 0, fmt.Errorf("decoding <loc>: %w", decErr)
+			if decErr := dec.DecodeElement(&text, &t); decErr != nil {
+				return "", nil, fmt.Errorf("decoding <loc>: %w", decErr)
 			}
 			text = strings.TrimSpace(text)
 			if text == "" {
@@ -298,20 +341,25 @@ func fetchAndParseSitemapObserved(ctx context.Context, client *http.Client, loc 
 			if u, parseErr := url.Parse(text); parseErr == nil && !u.IsAbs() && base != nil {
 				text = base.ResolveReference(u).String()
 			}
-			if kind == "index" {
-				locs = append(locs, text)
-			} else {
-				select {
-				case out <- text:
-					n++
-					observeScanEvent(observer, scanEvent{kind: eventURLDiscovered, url: text})
-				case <-stop:
-					return kind, locs, n, nil
-				case <-ctx.Done():
-					return "", nil, 0, ctx.Err()
-				}
-			}
+			locs = append(locs, text)
+		case xml.EndElement:
+			// The decoder rejects unbalanced end elements, so open is non-empty.
+			open = open[:len(open)-1]
 		}
 	}
-	return kind, locs, n, nil
+	return kind, locs, nil
+}
+
+// isEntryLoc reports whether an element named name, opened inside the
+// elements in open, is the <loc> of a sitemap entry.
+func isEntryLoc(open []xml.Name, name xml.Name) bool {
+	if len(open) != 2 || name.Local != "loc" {
+		return false
+	}
+	root, entry := open[0], open[1]
+	wantEntry := "url"
+	if root.Local == "sitemapindex" {
+		wantEntry = "sitemap"
+	}
+	return entry.Local == wantEntry && entry.Space == root.Space && name.Space == root.Space
 }

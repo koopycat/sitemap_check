@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"strings"
 )
@@ -22,36 +23,52 @@ func (r *repeatableString) Set(value string) error {
 	return nil
 }
 
-// normalizeListURL applies the same scheme default used for the sitemap
-// argument to URLs supplied through --url and --urls.
-func normalizeListURL(raw string) string {
+// normalizeListURL validates a positional sitemap argument or explicit list
+// URL. A value without a scheme receives an https:// prefix; otherwise the
+// scheme must be http or https in any letter case and is lowercased. Empty
+// input yields an empty string and no error.
+func normalizeListURL(raw string) (string, error) {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
-		return ""
+		return "", nil
 	}
-	if !strings.HasPrefix(raw, "http://") && !strings.HasPrefix(raw, "https://") {
-		return "https://" + raw
+	normalized := "https://" + raw
+	if scheme, rest, found := strings.Cut(raw, "://"); found {
+		scheme = strings.ToLower(scheme)
+		if scheme != "http" && scheme != "https" {
+			return "", fmt.Errorf("invalid URL %q: unsupported scheme %q (want http or https)", raw, scheme)
+		}
+		normalized = scheme + "://" + rest
 	}
-	return raw
+	u, err := url.Parse(normalized)
+	if err != nil {
+		return "", fmt.Errorf("invalid URL %q: %w", raw, err)
+	}
+	if u.Host == "" {
+		return "", fmt.Errorf("invalid URL %q: missing host", raw)
+	}
+	return normalized, nil
 }
 
 // readURLList reads one URL per line. Empty lines and comment lines are
-// ignored, while every remaining URL receives the explicit-list scheme
-// normalization.
+// ignored, while every remaining URL is normalized; an invalid URL fails the
+// whole list with its line number.
 func readURLList(r io.Reader) ([]string, error) {
 	scanner := bufio.NewScanner(r)
 	// Keep the normal Scanner limit useful for generated URL lists while still
 	// failing predictably on unreasonably large lines.
 	scanner.Buffer(make([]byte, 64*1024), 1<<20)
 	var urls []string
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
+	for line := 1; scanner.Scan(); line++ {
+		text := strings.TrimSpace(scanner.Text())
+		if text == "" || strings.HasPrefix(text, "#") {
 			continue
 		}
-		if normalized := normalizeListURL(line); normalized != "" {
-			urls = append(urls, normalized)
+		normalized, err := normalizeListURL(text)
+		if err != nil {
+			return nil, fmt.Errorf("line %d: %w", line, err)
 		}
+		urls = append(urls, normalized)
 	}
 	if err := scanner.Err(); err != nil {
 		return nil, err
@@ -79,7 +96,11 @@ func readURLListFile(path string, stdin io.Reader) ([]string, error) {
 func loadListURLs(explicit []string, listFile string, stdin io.Reader) ([]string, error) {
 	urls := make([]string, 0, len(explicit))
 	for _, raw := range explicit {
-		if normalized := normalizeListURL(raw); normalized != "" {
+		normalized, err := normalizeListURL(raw)
+		if err != nil {
+			return nil, fmt.Errorf("--url: %w", err)
+		}
+		if normalized != "" {
 			urls = append(urls, normalized)
 		}
 	}
@@ -93,17 +114,14 @@ func loadListURLs(explicit []string, listFile string, stdin io.Reader) ([]string
 	return append(urls, fileURLs...), nil
 }
 
-// emitURLList sends explicit-list URLs through the same channel used by
-// sitemap discovery. It returns false when the scan has been cancelled.
+// emitURLList sends explicit-list URLs, already normalized by loadListURLs,
+// through the same channel used by sitemap discovery. It returns false when
+// the scan has been cancelled.
 func emitURLList(ctx context.Context, out chan<- string, urls []string, observer scanObserver) bool {
-	for _, raw := range urls {
-		url := normalizeListURL(raw)
-		if url == "" {
-			continue
-		}
+	for _, listURL := range urls {
 		select {
-		case out <- url:
-			observeScanEvent(observer, scanEvent{kind: eventURLDiscovered, url: url})
+		case out <- listURL:
+			observeScanEvent(observer, scanEvent{kind: eventURLDiscovered, url: listURL})
 		case <-ctx.Done():
 			return false
 		}
@@ -117,12 +135,12 @@ func forwardURLSources(ctx context.Context, sitemap <-chan string, listURLs []st
 	if sitemap != nil {
 		for {
 			select {
-			case url, ok := <-sitemap:
+			case pageURL, ok := <-sitemap:
 				if !ok {
 					return emitURLList(ctx, out, listURLs, observer)
 				}
 				select {
-				case out <- url:
+				case out <- pageURL:
 				case <-ctx.Done():
 					return false
 				}

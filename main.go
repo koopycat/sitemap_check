@@ -98,7 +98,11 @@ func main() {
 	}
 	sitemapURL := ""
 	if len(positionals) == 1 {
-		sitemapURL = normalizeListURL(positionals[0])
+		sitemapURL, err = normalizeListURL(positionals[0])
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "error: sitemap: %v\n", err)
+			os.Exit(2)
+		}
 	}
 	listURLs, err := loadListURLs(explicitURLs, *urlsFile, os.Stdin)
 	if err != nil {

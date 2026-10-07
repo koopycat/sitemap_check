@@ -576,3 +576,130 @@ func TestRunChecksMaxAndFilter(t *testing.T) {
 		t.Errorf("checked %d, want 5 (max-urls)", count)
 	}
 }
+
+// A rate-limited checker consumes discovered URLs far more slowly than a
+// sitemap downloads. The sitemap fetch timeout must bound the download, not
+// the time the checker needs to work through the discovered URLs.
+func TestFetchSitemapSlowConsumerOutlastsFetchTimeout(t *testing.T) {
+	const urlCount = 5000
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?><urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">`)
+		for i := range urlCount {
+			fmt.Fprintf(w, "<url><loc>https://example.com/page/%d</loc></url>", i)
+		}
+		fmt.Fprint(w, "</urlset>")
+	}))
+	defer srv.Close()
+
+	client := srv.Client()
+	client.Timeout = time.Second
+	urls := make(chan string)
+	errCh := make(chan error, 1)
+	go func() {
+		_, _, err := fetchSitemapURLs(context.Background(), client, srv.URL+"/sitemap.xml", 0, 1, urls)
+		errCh <- err
+	}()
+
+	<-urls
+	time.Sleep(2 * client.Timeout)
+	got := 1 + len(collect(urls))
+	if err := <-errCh; err != nil {
+		t.Fatalf("fetch with slow consumer: %v", err)
+	}
+	if got != urlCount {
+		t.Fatalf("discovered %d URLs, want %d", got, urlCount)
+	}
+}
+
+func TestFetchSitemapIgnoresExtensionLocations(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/xml")
+		fmt.Fprint(w, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"
+        xmlns:image="http://www.google.com/schemas/sitemap-image/1.1"
+        xmlns:video="http://www.google.com/schemas/sitemap-video/1.1">
+  <url>
+    <loc>https://example.com/a</loc>
+    <image:image><image:loc>https://example.com/a.jpg</image:loc></image:image>
+    <video:video><video:content_loc>https://example.com/a.mp4</video:content_loc></video:video>
+  </url>
+  <url><loc>https://example.com/b</loc><image:loc>https://example.com/stray.jpg</image:loc></url>
+</urlset>`)
+	}))
+	defer srv.Close()
+
+	urls := make(chan string, 16)
+	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml", 0, 1, urls)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	got := collect(urls)
+	want := []string{"https://example.com/a", "https://example.com/b"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func TestFetchSitemapIndexIgnoresExtensionLocations(t *testing.T) {
+	mux := http.NewServeMux()
+	var base string
+	mux.HandleFunc("/index.xml", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<sitemapindex xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:x="urn:example:extension">
+  <sitemap><loc>%[1]s/child.xml</loc><x:loc>%[1]s/extension.xml</x:loc></sitemap>
+</sitemapindex>`, base)
+	})
+	mux.HandleFunc("/child.xml", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9"><url><loc>https://example.com/a</loc></url></urlset>`)
+	})
+	mux.HandleFunc("/extension.xml", func(w http.ResponseWriter, r *http.Request) {
+		t.Error("extension location was fetched as a child sitemap")
+	})
+	srv := httptest.NewServer(mux)
+	defer srv.Close()
+	base = srv.URL
+
+	urls := make(chan string, 16)
+	stats, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/index.xml", 0, 2, urls)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	got := collect(urls)
+	if fmt.Sprint(got) != "[https://example.com/a]" || stats.Files != 2 {
+		t.Errorf("got %v with %d files, want [https://example.com/a] with 2 files", got, stats.Files)
+	}
+}
+
+func TestFetchSitemapWithoutNamespace(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<urlset><url><loc>https://example.com/a</loc></url></urlset>`)
+	}))
+	defer srv.Close()
+
+	urls := make(chan string, 16)
+	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/sitemap.xml", 0, 1, urls)
+	if err != nil {
+		t.Fatalf("fetch: %v", err)
+	}
+	if got := collect(urls); fmt.Sprint(got) != "[https://example.com/a]" {
+		t.Errorf("got %v, want [https://example.com/a]", got)
+	}
+}
+
+func TestFetchSitemapRejectsUnsupportedRoot(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `<rss><channel><item><loc>https://example.com/a</loc></item></channel></rss>`)
+	}))
+	defer srv.Close()
+
+	urls := make(chan string, 16)
+	_, _, err := fetchSitemapURLs(context.Background(), srv.Client(), srv.URL+"/feed.xml", 0, 1, urls)
+	got := collect(urls)
+	if err == nil || !strings.Contains(err.Error(), "<rss>") {
+		t.Fatalf("error = %v, want unsupported root element <rss>", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("emitted %v from a non-sitemap document", got)
+	}
+}

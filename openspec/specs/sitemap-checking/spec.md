@@ -31,9 +31,23 @@ The command SHALL accept at most one positional sitemap URL, repeatable `--url` 
 
 #### Scenario: Input-source scheme normalization
 
-- **GIVEN** a positional sitemap argument or explicit list URL without an `http://` or `https://` prefix
+- **GIVEN** a positional sitemap argument or explicit list URL without a `scheme://` prefix
 - **WHEN** the command loads that input source
 - **THEN** it SHALL prefix the URL with `https://`
+
+#### Scenario: Input-source scheme case
+
+- **GIVEN** a positional sitemap argument or explicit list URL whose `http` or `https` scheme uses uppercase letters
+- **WHEN** the command loads that input source
+- **THEN** it SHALL accept the URL with its scheme in lowercase
+- **AND** it SHALL NOT add another scheme prefix
+
+#### Scenario: Unsupported input URL
+
+- **GIVEN** a positional sitemap argument or explicit list URL with a scheme other than `http` or `https`, or without a host
+- **WHEN** the command loads that input source
+- **THEN** it SHALL print a diagnostic naming the invalid URL to standard error, including the line number for an entry loaded from `--urls`
+- **AND** it SHALL exit with code 2 before checking any URL
 
 #### Scenario: Combined source ordering
 
@@ -58,6 +72,26 @@ The command SHALL fetch sitemap documents with HTTP GET and SHALL support XML `u
 - **GIVEN** a sitemap containing a `urlset` with non-empty `loc` elements
 - **WHEN** discovery succeeds with HTTP 200
 - **THEN** the command SHALL emit each listed page URL for checking
+
+#### Scenario: Sitemap extension locations
+
+- **GIVEN** a sitemap whose entries also carry extension data, such as image or video locations
+- **WHEN** the command parses the sitemap
+- **THEN** it SHALL treat only a `loc` that is a direct child of a `url` entry (or of a `sitemap` entry in an index), in the namespace of the document root, as a page URL (or child sitemap location)
+- **AND** it SHALL NOT check or fetch extension locations
+
+#### Scenario: Unsupported sitemap document
+
+- **GIVEN** a well-formed XML document whose root element is neither `urlset` nor `sitemapindex`
+- **WHEN** the command parses the document
+- **THEN** it SHALL treat the document as a sitemap failure that names the root element
+
+#### Scenario: Slow checking does not interrupt discovery
+
+- **GIVEN** a sitemap that downloads within the sitemap fetch timeout but whose page URLs take longer than that timeout to check
+- **WHEN** checking applies backpressure to discovery
+- **THEN** the command SHALL still discover and check every page URL in the sitemap
+- **AND** it SHALL NOT report a sitemap failure
 
 #### Scenario: Nested sitemap index
 

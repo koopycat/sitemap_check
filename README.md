@@ -6,6 +6,7 @@ It can also check explicit URL lists supplied on the command line or through a f
 ## Features
 
 - Parses `urlset` and `sitemapindex` documents, follows nested sitemaps recursively (depth limit 5, loop-safe)
+- Checks page URLs only: extension locations such as `<image:loc>` in image sitemaps are ignored
 - Sibling sitemap files are fetched concurrently
 - Handles plain XML and gzip-compressed sitemaps (`.xml.gz` and `Content-Encoding: gzip`)
 - Concurrent URL checking with per-host rate limiting
@@ -83,6 +84,7 @@ Live progress is always written to stderr, while the final table, JSON, or CSV r
 
 `--url` may be repeated, and `--urls FILE` reads one URL per line (`-` means stdin).
 List lines are trimmed, blank lines and lines beginning with `#` are ignored, and scheme-less URLs receive an `https://` prefix.
+The sitemap argument and list URLs must use `http` or `https` (in any letter case) and name a host; anything else is a usage error (exit code 2), reported with its line number for `--urls`.
 When both sources are provided, sitemap URLs are checked before explicit list URLs.
 All list URLs use the same checking, filtering, limiting, retry, rate-limiting, redirect, reporting, and exit-code behavior as sitemap URLs.
 

@@ -482,3 +482,80 @@ func TestCLIBlackBoxCSVContract(t *testing.T) {
 		t.Fatalf("CSV classes = %v", classes)
 	}
 }
+
+func TestCLIBlackBoxImageSitemapChecksOnlyPages(t *testing.T) {
+	fixture := newHTTPFixture(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/sitemap.xml":
+			w.Header().Set("Content-Type", "application/xml")
+			fmt.Fprintf(w, `<?xml version="1.0" encoding="UTF-8"?>
+<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9" xmlns:image="http://www.google.com/schemas/sitemap-image/1.1">
+  <url><loc>http://%[1]s/page</loc><image:image><image:loc>http://%[1]s/missing.jpg</image:loc></image:image></url>
+</urlset>`, r.Host)
+		case "/page":
+			w.WriteHeader(http.StatusOK)
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	defer fixture.close()
+
+	result := runCLI(t, cliRunOptions{}, fixture.URL("/sitemap.xml"), "-o", "json", "--retries", "0")
+	requireExitCode(t, result, 0)
+	report := decodeJSONReport(t, result.stdout)
+	if report.Summary.Total != 1 || resultByPath(t, report, "/page").Class() != "ok" {
+		t.Fatalf("report = %+v, want only the page URL", report)
+	}
+	if got := fixture.count("/missing.jpg"); got != 0 {
+		t.Fatalf("image URL was requested %d times, want 0", got)
+	}
+}
+
+func TestCLIBlackBoxInputURLSchemes(t *testing.T) {
+	fixture := newHTTPFixture(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) }))
+	defer fixture.close()
+
+	t.Run("uppercase scheme is accepted", func(t *testing.T) {
+		upper := "HTTP://" + strings.TrimPrefix(fixture.URL("/upper"), "http://")
+		result := runCLI(t, cliRunOptions{}, "--url", upper, "-o", "json", "--retries", "0")
+		requireExitCode(t, result, 0)
+		report := decodeJSONReport(t, result.stdout)
+		if got := resultByPath(t, report, "/upper").URL; got != fixture.URL("/upper") {
+			t.Fatalf("checked URL = %q, want %q", got, fixture.URL("/upper"))
+		}
+	})
+
+	invalid := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"unsupported --url scheme", []string{"--url", "ftp://127.0.0.1/file"}, `"ftp"`},
+		{"unsupported sitemap scheme", []string{"FILE:///tmp/sitemap.xml"}, `"file"`},
+		{"URL without host", []string{"--url", "https:///path"}, "host"},
+	}
+	for _, tc := range invalid {
+		t.Run(tc.name+" is a usage error", func(t *testing.T) {
+			result := runCLI(t, cliRunOptions{}, tc.args...)
+			requireExitCode(t, result, 2)
+			if !strings.Contains(result.stderr, tc.want) {
+				t.Fatalf("stderr = %q, want it to mention %s", result.stderr, tc.want)
+			}
+			if result.stdout != "" {
+				t.Fatalf("usage error produced a report: %q", result.stdout)
+			}
+		})
+	}
+
+	t.Run("invalid --urls line names its line", func(t *testing.T) {
+		stdin := fixture.URL("/fine") + "\n# comment\nftp://127.0.0.1/file\n"
+		result := runCLI(t, cliRunOptions{stdin: stdin}, "--urls", "-")
+		requireExitCode(t, result, 2)
+		if !strings.Contains(result.stderr, "line 3") || !strings.Contains(result.stderr, `"ftp"`) {
+			t.Fatalf("stderr = %q, want line 3 and the ftp scheme", result.stderr)
+		}
+		if fixture.count("/fine") != 0 {
+			t.Fatal("URLs were checked despite an invalid list entry")
+		}
+	})
+}
